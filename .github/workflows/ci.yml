@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go-version: ["oldstable", "stable"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache ClickHouse binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/embedded-clickhouse
+          key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config.go') }}
+
+      - name: Run tests
+        run: go test -short -race -count=1 ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Extract golangci-lint version from .binny.yaml
+        id: lint-version
+        run: |
+          version=$(grep -A2 'name: golangci-lint' .binny.yaml | grep 'want:' | awk '{print $2}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ steps.lint-version.outputs.version }}
