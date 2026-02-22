@@ -82,7 +82,7 @@ func TestIntegration_StartStop(t *testing.T) {
 
 	// HTTP ping should work.
 	client := &http.Client{Timeout: time.Second}
-	assert.True(t, ping(client, s.HTTPURL()+"/ping"))
+	assert.True(t, ping(context.Background(), client, s.HTTPURL()+"/ping"))
 
 	require.NoError(t, s.Stop())
 
@@ -178,8 +178,8 @@ func TestIntegration_ParallelInstances(t *testing.T) {
 
 	// Both should respond to ping.
 	client := &http.Client{Timeout: time.Second}
-	assert.True(t, ping(client, s1.HTTPURL()+"/ping"))
-	assert.True(t, ping(client, s2.HTTPURL()+"/ping"))
+	assert.True(t, ping(context.Background(), client, s1.HTTPURL()+"/ping"))
+	assert.True(t, ping(context.Background(), client, s2.HTTPURL()+"/ping"))
 
 	// Queries should work independently.
 	db1, err := sql.Open("clickhouse", s1.DSN())
@@ -234,7 +234,8 @@ func TestIntegration_HTTPInterface(t *testing.T) {
 	resp, err := http.Get(s.HTTPURL() + "/ping")
 	require.NoError(t, err)
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "Ok.\n", string(body))
@@ -243,7 +244,8 @@ func TestIntegration_HTTPInterface(t *testing.T) {
 	resp, err = http.Get(s.HTTPURL() + "/?query=" + "SELECT%201")
 	require.NoError(t, err)
 
-	body, _ = io.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "1\n", string(body))

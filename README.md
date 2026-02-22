@@ -99,7 +99,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestSomething(t *testing.T) {
-    db, _ := sql.Open("clickhouse", testServer.DSN())
+    db, err := sql.Open("clickhouse", testServer.DSN())
+    if err != nil {
+        t.Fatal(err)
+    }
     defer db.Close()
     // ...
 }

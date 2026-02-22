@@ -66,14 +66,14 @@ func extractClickHouseBinary(archivePath, destPath string) error {
 
 // writeExecutable writes reader content to destPath atomically via a temp file.
 func writeExecutable(r io.Reader, destPath string) error {
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("embedded-clickhouse: create directory: %w", err)
-	}
-
-	// sanitize destPath to avoid path traversal
+	// Sanitize before any filesystem mutation to prevent path traversal.
 	destPath = filepath.Clean(destPath)
 	if strings.Contains(destPath, "..") {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, destPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("embedded-clickhouse: create directory: %w", err)
 	}
 
 	tmp := destPath + ".tmp"

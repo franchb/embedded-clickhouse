@@ -42,7 +42,10 @@ func TestCacheDir_Default(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	want := filepath.Join(home, ".cache", cacheSubdir)
 	if dir != want {

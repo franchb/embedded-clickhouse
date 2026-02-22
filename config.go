@@ -2,6 +2,7 @@ package embeddedclickhouse
 
 import (
 	"io"
+	"maps"
 	"os"
 	"time"
 )
@@ -9,11 +10,14 @@ import (
 // ClickHouseVersion represents a ClickHouse server version string.
 type ClickHouseVersion string
 
-const (
-	V26_1 ClickHouseVersion = "26.1.3.52-stable"
-	V25_8 ClickHouseVersion = "25.8.16.34-lts"
-	V25_3 ClickHouseVersion = "25.3.14.14-lts"
-)
+// V26_1 is ClickHouse 26.1 (stable channel).
+const V26_1 ClickHouseVersion = "26.1.3.52-stable"
+
+// V25_8 is ClickHouse 25.8 (LTS channel).
+const V25_8 ClickHouseVersion = "25.8.16.34-lts"
+
+// V25_3 is ClickHouse 25.3 (LTS channel).
+const V25_3 ClickHouseVersion = "25.3.14.14-lts"
 
 // DefaultVersion is the default ClickHouse version used when none is specified.
 const DefaultVersion = V25_8
@@ -106,7 +110,12 @@ func (c Config) Logger(w io.Writer) Config {
 }
 
 // Settings sets arbitrary ClickHouse server settings.
+// The provided map is copied; subsequent caller mutations do not affect the Config.
 func (c Config) Settings(s map[string]string) Config {
-	c.settings = s
+	m := make(map[string]string, len(s))
+	maps.Copy(m, s)
+
+	c.settings = m
+
 	return c
 }

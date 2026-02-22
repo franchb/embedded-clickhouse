@@ -1,6 +1,6 @@
 module github.com/franchb/embedded-clickhouse
 
-go 1.25.0
+go 1.25
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0

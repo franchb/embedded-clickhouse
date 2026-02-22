@@ -74,6 +74,8 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 		fmt.Fprint(w, "Ok.\n")
 	})
 
+	srvCh := make(chan *http.Server, 1)
+
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 
@@ -83,8 +85,18 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 		}
 
 		srv := &http.Server{Handler: mux}
+		srvCh <- srv
+
 		srv.Serve(l2)
 	}()
+
+	t.Cleanup(func() {
+		select {
+		case srv := <-srvCh:
+			srv.Close()
+		default:
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -116,7 +128,7 @@ func TestPing(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	url := fmt.Sprintf("http://127.0.0.1:%d/ping", l.Addr().(*net.TCPAddr).Port)
 
-	if !ping(client, url) {
+	if !ping(context.Background(), client, url) {
 		t.Error("ping should return true")
 	}
 }

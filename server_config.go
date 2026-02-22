@@ -1,9 +1,12 @@
 package embeddedclickhouse
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"text/template"
 )
 
@@ -45,13 +48,27 @@ const configTemplate = `<?xml version="1.0"?>
         <default/>
     </quotas>
 {{range $key, $value := .Settings}}
-    <{{$key}}>{{$value}}</{{$key}}>
+    <{{$key}}>{{xmlEscape $value}}</{{$key}}>
 {{end}}
 </clickhouse>
 `
 
+// validSettingKey matches safe XML element names for ClickHouse settings.
+var validSettingKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+// xmlEscapeString escapes a string so it is safe to embed in an XML text node.
+func xmlEscapeString(s string) string {
+	var buf bytes.Buffer
+
+	_ = xml.EscapeText(&buf, []byte(s))
+
+	return buf.String()
+}
+
 //nolint:gochecknoglobals // compile once, reuse
-var configTmpl = template.Must(template.New("config").Parse(configTemplate))
+var configTmpl = template.Must(template.New("config").Funcs(template.FuncMap{
+	"xmlEscape": xmlEscapeString,
+}).Parse(configTemplate))
 
 type serverConfigData struct {
 	TCPPort         uint32
@@ -65,6 +82,12 @@ type serverConfigData struct {
 
 // writeServerConfig generates a ClickHouse XML config file in the given directory.
 func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
+	for k := range settings {
+		if !validSettingKey.MatchString(k) {
+			return "", fmt.Errorf("embedded-clickhouse: invalid setting key %q: must match [a-zA-Z][a-zA-Z0-9_]*", k)
+		}
+	}
+
 	dataDir := filepath.Join(dir, "data")
 	tmpDir := filepath.Join(dir, "tmp")
 	userFilesDir := filepath.Join(dir, "user_files")
@@ -82,7 +105,6 @@ func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string
 	if err != nil {
 		return "", fmt.Errorf("embedded-clickhouse: create config: %w", err)
 	}
-	defer f.Close()
 
 	data := serverConfigData{
 		TCPPort:         tcpPort,
@@ -95,7 +117,12 @@ func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string
 	}
 
 	if err := configTmpl.Execute(f, data); err != nil {
+		f.Close()
 		return "", fmt.Errorf("embedded-clickhouse: write config: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: close config: %w", err)
 	}
 
 	return configPath, nil

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const cacheSubdir = "embedded-clickhouse"
@@ -30,5 +31,7 @@ func cacheDir(override string) (string, error) {
 
 // cachedBinaryPath returns the full path to a cached ClickHouse binary for the given version and platform.
 func cachedBinaryPath(cacheDir string, version ClickHouseVersion) string {
-	return filepath.Join(cacheDir, fmt.Sprintf("clickhouse-%s-%s-%s", string(version), runtime.GOOS, runtime.GOARCH))
+	// Replace path separators in the version string to prevent directory traversal in cache filenames.
+	safeVersion := strings.ReplaceAll(string(version), string(filepath.Separator), "_")
+	return filepath.Join(cacheDir, fmt.Sprintf("clickhouse-%s-%s-%s", safeVersion, runtime.GOOS, runtime.GOARCH))
 }

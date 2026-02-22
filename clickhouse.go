@@ -13,24 +13,41 @@ import (
 	"testing"
 )
 
-var (
-	ErrServerNotStarted     = errors.New("embedded-clickhouse: server has not been started")
-	ErrServerAlreadyStarted = errors.New("embedded-clickhouse: server is already started")
-	ErrUnsupportedPlatform  = errors.New("embedded-clickhouse: unsupported platform")
-	ErrStopTimeout          = errors.New("embedded-clickhouse: server did not stop within timeout, killed")
-	ErrDownloadFailed       = errors.New("embedded-clickhouse: download failed")
-	ErrSHA512Mismatch       = errors.New("embedded-clickhouse: SHA512 mismatch")
-	ErrSHA512NotFound       = errors.New("embedded-clickhouse: SHA512 hash not found")
-	ErrBinaryNotFound       = errors.New("embedded-clickhouse: binary not found in archive")
-	ErrInvalidPath          = errors.New("embedded-clickhouse: invalid destination path")
-	ErrUnexpectedAddrType   = errors.New("embedded-clickhouse: unexpected listener address type")
-)
+// ErrServerNotStarted is returned by Stop when the server has not been started.
+var ErrServerNotStarted = errors.New("embedded-clickhouse: server has not been started")
+
+// ErrServerAlreadyStarted is returned by Start when the server is already running.
+var ErrServerAlreadyStarted = errors.New("embedded-clickhouse: server is already started")
+
+// ErrUnsupportedPlatform is returned when the current OS/architecture has no ClickHouse release asset.
+var ErrUnsupportedPlatform = errors.New("embedded-clickhouse: unsupported platform")
+
+// ErrStopTimeout is returned when the server does not stop within the configured StopTimeout; the process is killed.
+var ErrStopTimeout = errors.New("embedded-clickhouse: server did not stop within timeout, killed")
+
+// ErrDownloadFailed is returned when the HTTP download of a ClickHouse asset returns a non-200 status.
+var ErrDownloadFailed = errors.New("embedded-clickhouse: download failed")
+
+// ErrSHA512Mismatch is returned when the downloaded file's SHA512 hash does not match the expected value.
+var ErrSHA512Mismatch = errors.New("embedded-clickhouse: SHA512 mismatch")
+
+// ErrSHA512NotFound is returned when the SHA512 checksum file does not contain a hash for the expected filename.
+var ErrSHA512NotFound = errors.New("embedded-clickhouse: SHA512 hash not found")
+
+// ErrBinaryNotFound is returned when the ClickHouse binary cannot be located inside a downloaded archive.
+var ErrBinaryNotFound = errors.New("embedded-clickhouse: binary not found in archive")
+
+// ErrInvalidPath is returned when a destination path contains a path traversal sequence ("..").
+var ErrInvalidPath = errors.New("embedded-clickhouse: invalid destination path")
+
+// ErrUnexpectedAddrType is returned when the listener address is not the expected *net.TCPAddr type.
+var ErrUnexpectedAddrType = errors.New("embedded-clickhouse: unexpected listener address type")
 
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	started bool
 	cmd     *exec.Cmd
 	tmpDir  string
@@ -74,7 +91,7 @@ func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 
 // Start downloads the ClickHouse binary (if needed), generates config, and starts the server.
 func (e *EmbeddedClickHouse) Start() error {
-	e.mu.Lock()
+	e.mu.Lock() // write lock: modifies started, cmd, ports
 	defer e.mu.Unlock()
 
 	if e.started {
@@ -177,7 +194,7 @@ func (e *EmbeddedClickHouse) Start() error {
 
 // Stop gracefully shuts down the ClickHouse server and cleans up resources.
 func (e *EmbeddedClickHouse) Stop() error {
-	e.mu.Lock()
+	e.mu.Lock() // write lock: resets started, cmd, ports
 	defer e.mu.Unlock()
 
 	if !e.started {
@@ -199,26 +216,40 @@ func (e *EmbeddedClickHouse) Stop() error {
 
 	e.started = false
 	e.cmd = nil
+	e.tcpPort = 0
+	e.httpPort = 0
 
 	return errors.Join(errs...)
 }
 
 // TCPAddr returns the TCP address for the ClickHouse native protocol (e.g., "127.0.0.1:19000").
 func (e *EmbeddedClickHouse) TCPAddr() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	return fmt.Sprintf("127.0.0.1:%d", e.tcpPort)
 }
 
 // HTTPAddr returns the HTTP address for the ClickHouse HTTP interface (e.g., "127.0.0.1:18123").
 func (e *EmbeddedClickHouse) HTTPAddr() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	return fmt.Sprintf("127.0.0.1:%d", e.httpPort)
 }
 
 // DSN returns a ClickHouse DSN for use with clickhouse-go (e.g., "clickhouse://127.0.0.1:19000/default").
 func (e *EmbeddedClickHouse) DSN() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	return fmt.Sprintf("clickhouse://127.0.0.1:%d/default", e.tcpPort)
 }
 
 // HTTPURL returns the base HTTP URL (e.g., "http://127.0.0.1:18123").
 func (e *EmbeddedClickHouse) HTTPURL() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	return fmt.Sprintf("http://127.0.0.1:%d", e.httpPort)
 }

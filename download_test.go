@@ -123,7 +123,7 @@ func TestVerifySHA512(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz")
+	err := verifySHA512(filePath, ts.URL, "testfile.tgz", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestVerifySHA512_Mismatch(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz")
+	err := verifySHA512(filePath, ts.URL, "testfile.tgz", nil)
 	if err == nil {
 		t.Fatal("expected SHA512 mismatch error")
 	}

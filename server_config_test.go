@@ -1,6 +1,7 @@
 package embeddedclickhouse
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ func TestWriteServerConfig(t *testing.T) {
 		"<http_port>18123</http_port>",
 		"<max_threads>4</max_threads>",
 		"<password></password>",
-		"<max_server_memory_usage>1073741824</max_server_memory_usage>",
+		fmt.Sprintf("<max_server_memory_usage>%d</max_server_memory_usage>", 1<<30),
 	}
 
 	for _, check := range checks {

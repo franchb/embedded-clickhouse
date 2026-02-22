@@ -44,7 +44,7 @@ func TestExtractClickHouseBinary(t *testing.T) {
 func TestExtractClickHouseBinary_MissingArchive(t *testing.T) {
 	t.Parallel()
 
-	err := extractClickHouseBinary("/nonexistent/archive.tgz", "/tmp/clickhouse")
+	err := extractClickHouseBinary("/nonexistent/archive.tgz", filepath.Join(t.TempDir(), "clickhouse"))
 	if err == nil {
 		t.Fatal("expected error for missing archive")
 	}

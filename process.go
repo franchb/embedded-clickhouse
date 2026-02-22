@@ -83,7 +83,11 @@ func stopProcess(cmd *exec.Cmd, timeout time.Duration) error {
 				if exitErr.ExitCode() == -1 || exitErr.ExitCode() == 143 {
 					return nil
 				}
+
+				return err
 			}
+			// Non-ExitError (e.g., I/O error waiting on process): surface it.
+			return err
 		}
 
 		return nil

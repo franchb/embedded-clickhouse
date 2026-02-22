@@ -10,9 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 var downloadMu sync.Mutex //nolint:gochecknoglobals // serializes concurrent binary downloads
+
+// httpClient is a shared HTTP client with a timeout to prevent indefinite hangs on slow CDNs.
+var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknoglobals
 
 // ensureBinary returns the path to a ClickHouse binary, downloading it if necessary.
 func ensureBinary(cfg Config) (string, error) {
@@ -61,6 +65,8 @@ func ensureBinary(cfg Config) (string, error) {
 		if err := downloadRawBinary(url, binPath); err != nil {
 			return "", err
 		}
+	default:
+		return "", fmt.Errorf("embedded-clickhouse: unknown asset type: %d", asset.assetType)
 	}
 
 	logf(cfg.logger, "Done.\n")
@@ -88,7 +94,7 @@ func downloadAndExtract(cfg Config, url string, asset platformAsset, binPath str
 	// Verify SHA512 for archives.
 	sha512url := sha512URL(cfg.binaryRepositoryURL, cfg.version, asset)
 
-	if err := verifySHA512(archivePath, sha512url, asset.filename); err != nil {
+	if err := verifySHA512(archivePath, sha512url, asset.filename, cfg.logger); err != nil {
 		return err
 	}
 
@@ -120,7 +126,7 @@ func downloadRawBinary(url, binPath string) error {
 }
 
 func downloadFile(url, destPath string) error {
-	resp, err := http.Get(url) //nolint:gosec,noctx // URL is constructed internally
+	resp, err := httpClient.Get(url) //nolint:gosec,noctx // URL is constructed internally
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: download %s: %w", url, err)
 	}
@@ -150,15 +156,18 @@ func downloadFile(url, destPath string) error {
 	return nil
 }
 
-func verifySHA512(filePath, sha512URL, expectedFilename string) error {
-	resp, err := http.Get(sha512URL) //nolint:gosec,noctx
+func verifySHA512(filePath, sha512URL, expectedFilename string, logger io.Writer) error {
+	resp, err := httpClient.Get(sha512URL) //nolint:gosec,noctx
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: download SHA512: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// SHA512 file not available — skip verification.
+		// SHA512 file not available — skip verification but warn the caller.
+		logf(logger, "embedded-clickhouse: SHA512 not available for %s (HTTP %d), skipping verification\n",
+			expectedFilename, resp.StatusCode)
+
 		return nil
 	}
 

@@ -20,7 +20,7 @@ type platformAsset struct {
 	assetType assetType
 }
 
-// numericVersion strips the -stable/-lts suffix from a version string.
+// numericVersion strips the -stable/-lts/-testing suffix from a version string.
 // e.g., "25.8.16.34-lts" -> "25.8.16.34".
 func numericVersion(v ClickHouseVersion) string {
 	s := string(v)
@@ -35,10 +35,10 @@ func numericVersion(v ClickHouseVersion) string {
 }
 
 func resolveAsset(version ClickHouseVersion, goos, goarch string) (platformAsset, error) {
-	numVer := numericVersion(version)
-
 	switch goos {
 	case "linux":
+		numVer := numericVersion(version)
+
 		arch, err := linuxArch(goarch)
 		if err != nil {
 			return platformAsset{}, err
@@ -86,6 +86,10 @@ func darwinAssetName(goarch string) (string, error) {
 }
 
 func downloadURL(baseURL string, version ClickHouseVersion, asset platformAsset) string {
+	if version == "" {
+		return ""
+	}
+
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
