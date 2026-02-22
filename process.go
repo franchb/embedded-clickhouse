@@ -26,6 +26,10 @@ func allocatePort() (uint32, error) {
 
 	port := uint32(tcpAddr.Port)
 
+	// Note: there is an inherent TOCTOU race between releasing this listener
+	// and ClickHouse binding to the same port. This is unavoidable with
+	// bind-and-release port allocation, but is safe in practice because
+	// the port is allocated on loopback and ClickHouse binds quickly.
 	l.Close()
 
 	return port, nil

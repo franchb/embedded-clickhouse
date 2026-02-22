@@ -25,6 +25,7 @@ const configTemplate = `<?xml version="1.0"?>
     <user_files_path>{{.UserFilesDir}}/</user_files_path>
     <format_schema_path>{{.FormatSchemaDir}}/</format_schema_path>
 
+    <!-- 1 GiB default; override via Settings({"max_server_memory_usage": "..."}) -->
     <max_server_memory_usage>1073741824</max_server_memory_usage>
 
     <users>

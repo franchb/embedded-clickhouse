@@ -152,3 +152,16 @@ func TestSHA512URL(t *testing.T) {
 		t.Errorf("sha512URL = %q, want %q", got, want)
 	}
 }
+
+func TestSHA512URL_Darwin(t *testing.T) {
+	t.Parallel()
+
+	asset := platformAsset{filename: "clickhouse-macos-aarch64", assetType: assetRawBinary}
+
+	got := sha512URL("", V25_8, asset)
+
+	want := "https://github.com/ClickHouse/ClickHouse/releases/download/v25.8.16.34-lts/clickhouse-macos-aarch64.sha512"
+	if got != want {
+		t.Errorf("sha512URL = %q, want %q", got, want)
+	}
+}

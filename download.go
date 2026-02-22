@@ -62,7 +62,7 @@ func ensureBinary(cfg Config) (string, error) {
 			return "", err
 		}
 	case assetRawBinary:
-		if err := downloadRawBinary(url, binPath); err != nil {
+		if err := downloadRawBinary(cfg, asset, url, binPath); err != nil {
 			return "", err
 		}
 	default:
@@ -101,7 +101,7 @@ func downloadAndExtract(cfg Config, url string, asset platformAsset, binPath str
 	return extractClickHouseBinary(archivePath, binPath)
 }
 
-func downloadRawBinary(url, binPath string) error {
+func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) error {
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		return fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
 	}
@@ -109,6 +109,13 @@ func downloadRawBinary(url, binPath string) error {
 	tmp := binPath + ".tmp"
 
 	if err := downloadFile(url, tmp); err != nil {
+		return err
+	}
+
+	sha512url := sha512URL(cfg.binaryRepositoryURL, cfg.version, asset)
+
+	if err := verifySHA512(tmp, sha512url, asset.filename, cfg.logger); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 
@@ -200,15 +207,6 @@ func parseSHA512(content, filename string) (string, error) {
 	for line := range strings.SplitSeq(strings.TrimSpace(content), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) >= 2 && parts[1] == filename {
-			return strings.ToLower(parts[0]), nil
-		}
-	}
-
-	// If there's exactly one line with just a hash, use it.
-	lines := strings.Split(strings.TrimSpace(content), "\n")
-	if len(lines) == 1 {
-		parts := strings.Fields(lines[0])
-		if len(parts) >= 1 && len(parts[0]) == 128 {
 			return strings.ToLower(parts[0]), nil
 		}
 	}

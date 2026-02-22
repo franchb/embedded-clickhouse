@@ -11,10 +11,11 @@ permissions:
 
 jobs:
   test:
-    name: Test (Go ${{ matrix.go-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest]
         go-version: ["oldstable", "stable"]
     steps:
       - uses: actions/checkout@v6

@@ -1,10 +1,34 @@
 # embedded-clickhouse
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/franchb/embedded-clickhouse.svg)](https://pkg.go.dev/github.com/franchb/embedded-clickhouse)
+
 Run a real ClickHouse database locally on Linux or macOS as part of another Go application or test.
 
 When testing, this provides a much higher level of confidence than mocking or using Docker. It requires no external dependencies beyond the Go toolchain — no Docker, no testcontainers, no pre-installed ClickHouse.
 
 Inspired by [fergusstrange/embedded-postgres](https://github.com/fergusstrange/embedded-postgres). ClickHouse binaries are fetched directly from [official GitHub releases](https://github.com/ClickHouse/ClickHouse/releases).
+
+## Why not testcontainers?
+
+The story starts in a GitLab CI pipeline.
+
+We had a Go service that talked to ClickHouse, and we wanted real integration tests — not mocks, not stubs, just actual SQL hitting an actual database. The natural choice was [testcontainers-go](https://golang.testcontainers.org/). We added the dependency, wrote the tests, pushed — and immediately hit a wall.
+
+testcontainers-go needs a Docker daemon. In GitLab CI that means picking your poison:
+
+**Docker-in-Docker (DinD)** — spin up a `docker:dind` service alongside your job. It works, but the service container must run with `privileged: true`. GitLab's shared runners disable privileged mode by default, and many self-hosted runner fleets lock it down for good reason: a privileged DinD container has unrestricted access to the host kernel. One misconfigured job and you're escalated to root on the runner.
+
+**Docker-outside-of-Docker (DooD)** — mount `/var/run/docker.sock` from the host into the job container. Sounds safer, but the Docker socket is a root-equivalent backdoor. Any code running in the job can create a privileged container that bind-mounts `/` from the host. Security teams tend to notice this and the mount disappears from the runner config shortly after.
+
+On top of the privilege problem, testcontainers spins up a sidecar called **Ryuk** — a reaper container responsible for cleaning up after crashed tests. Ryuk needs to bind a port and phone home to the test process. In CI networks with strict firewall rules, Ryuk silently fails to connect, producing cryptic `context deadline exceeded` errors that vanish on retry and reappear at random. Debugging it means grepping through nested container logs while your CI queue backs up.
+
+We tried Podman as a rootless alternative. Podman rootless requires disabling Ryuk entirely (`TESTCONTAINERS_RYUK_DISABLED=true`), which means manual cleanup. Rootful Podman needs `ryuk.container.privileged=true`, which brings the privilege problem back through a different door.
+
+At some point the complexity of the setup exceeded the complexity of the thing we were testing.
+
+The insight from [fergusstrange/embedded-postgres](https://github.com/fergusstrange/embedded-postgres) was that you don't need Docker at all. ClickHouse ships as a single self-contained binary. You can download it, verify its checksum, and run it as a child process — no daemon, no socket, no sidecar, no privilege escalation. The binary starts in under a second, listens on a random port, and exits when your test exits.
+
+`embedded-clickhouse` applies that same idea to ClickHouse. The binary is fetched once, cached in `~/.cache/embedded-clickhouse/`, and reused across test runs. In CI, you cache that directory and the download never happens again. No Docker. No privileged runners. No Ryuk.
 
 ## Installation
 
@@ -192,10 +216,21 @@ The downloaded ClickHouse binary (~200MB for Linux, ~130MB for macOS) is cached 
     key: clickhouse-${{ runner.os }}-${{ runner.arch }}-25.8.16.34-lts
 ```
 
+## Memory limit
+
+The embedded server defaults to a **1 GiB** memory limit (`max_server_memory_usage`). Override it via `Settings()`:
+
+```go
+embeddedclickhouse.DefaultConfig().
+    Settings(map[string]string{"max_server_memory_usage": "2147483648"}) // 2 GiB
+```
+
+ClickHouse applies the last occurrence of a setting in the config file, so any value passed through `Settings()` takes precedence over the built-in default.
+
 ## How it works
 
 1. **Download** — fetches the ClickHouse binary from GitHub releases (or a configured mirror) on first use
-2. **Verify** — checks SHA512 hash for Linux `.tgz` archives
+2. **Verify** — checks SHA512 hash for downloaded assets
 3. **Cache** — stores the extracted binary at `~/.cache/embedded-clickhouse/` for reuse
 4. **Configure** — generates a minimal XML config with allocated ports and a temp data directory
 5. **Start** — launches `clickhouse server` as a child process

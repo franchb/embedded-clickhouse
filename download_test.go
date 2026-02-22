@@ -1,6 +1,7 @@
 package embeddedclickhouse
 
 import (
+	"bytes"
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,9 +74,9 @@ func TestParseSHA512(t *testing.T) {
 		},
 		{
 			name:     "single hash line (128 chars)",
-			content:  "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483  clickhouse-common-static-25.3.3.42-amd64.tgz\n",
+			content:  "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483\n",
 			filename: "clickhouse-common-static-25.3.3.42-amd64.tgz",
-			want:     "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483",
+			wantErr:  true,
 		},
 		{
 			name:     "filename not found",
@@ -231,5 +233,66 @@ func TestFileSHA512(t *testing.T) {
 	want := hex.EncodeToString(h[:])
 	if got != want {
 		t.Errorf("hash = %q, want %q", got, want)
+	}
+}
+
+func TestDownloadRawBinary_WithVerification(t *testing.T) {
+	t.Parallel()
+
+	binaryContent := []byte("fake clickhouse binary")
+	h := sha512.Sum512(binaryContent)
+	expectedHash := hex.EncodeToString(h[:])
+	filename := "clickhouse-macos"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha512") {
+			fmt.Fprintf(w, "%s  %s\n", expectedHash, filename)
+		} else {
+			w.Write(binaryContent)
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, filename)
+	asset := platformAsset{filename: filename, assetType: assetRawBinary}
+	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir)
+
+	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(got, binaryContent) {
+		t.Errorf("binary content mismatch")
+	}
+}
+
+func TestDownloadRawBinary_SHA512Unavailable(t *testing.T) {
+	t.Parallel()
+
+	binaryContent := []byte("fake binary no sha512")
+	filename := "clickhouse-macos"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha512") {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.Write(binaryContent)
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, filename)
+	asset := platformAsset{filename: filename, assetType: assetRawBinary}
+	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir)
+
+	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+		t.Fatal(err)
 	}
 }
