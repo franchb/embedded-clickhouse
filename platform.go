@@ -98,7 +98,12 @@ func downloadURL(baseURL string, version ClickHouseVersion, asset platformAsset)
 }
 
 func sha512URL(baseURL string, version ClickHouseVersion, asset platformAsset) string {
-	return downloadURL(baseURL, version, asset) + ".sha512"
+	u := downloadURL(baseURL, version, asset)
+	if u == "" {
+		return ""
+	}
+
+	return u + ".sha512"
 }
 
 func resolveCurrentPlatformAsset(version ClickHouseVersion) (platformAsset, error) {

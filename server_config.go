@@ -20,10 +20,10 @@ const configTemplate = `<?xml version="1.0"?>
     <tcp_port>{{.TCPPort}}</tcp_port>
     <http_port>{{.HTTPPort}}</http_port>
 
-    <path>{{.DataDir}}/</path>
-    <tmp_path>{{.TmpDir}}/</tmp_path>
-    <user_files_path>{{.UserFilesDir}}/</user_files_path>
-    <format_schema_path>{{.FormatSchemaDir}}/</format_schema_path>
+    <path>{{xmlEscape .DataDir}}/</path>
+    <tmp_path>{{xmlEscape .TmpDir}}/</tmp_path>
+    <user_files_path>{{xmlEscape .UserFilesDir}}/</user_files_path>
+    <format_schema_path>{{xmlEscape .FormatSchemaDir}}/</format_schema_path>
 
     <!-- 1 GiB default; override via Settings({"max_server_memory_usage": "..."}) -->
     <max_server_memory_usage>1073741824</max_server_memory_usage>

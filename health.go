@@ -41,7 +41,7 @@ func ping(ctx context.Context, client *http.Client, url string) bool {
 		return false
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // URL is always http://127.0.0.1:<port>/ping, constructed internally
 	if err != nil {
 		return false
 	}
