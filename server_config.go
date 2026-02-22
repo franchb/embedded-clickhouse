@@ -52,16 +52,19 @@ const configTemplate = `<?xml version="1.0"?>
 </clickhouse>
 `
 
-// defaultServerSettings are baked into every generated config.
+// defaultServerSettings returns settings baked into every generated config.
 // User-supplied Settings override these values; any key not overridden
 // keeps its default.
-var defaultServerSettings = map[string]string{}
+func defaultServerSettings() map[string]string {
+	return map[string]string{}
+}
 
 // mergeSettings returns defaultServerSettings with user values overlaid.
 // A nil input returns a copy of the defaults.
 func mergeSettings(user map[string]string) map[string]string {
-	merged := make(map[string]string, len(defaultServerSettings)+len(user))
-	maps.Copy(merged, defaultServerSettings)
+	defaults := defaultServerSettings()
+	merged := make(map[string]string, len(defaults)+len(user))
+	maps.Copy(merged, defaults)
 	maps.Copy(merged, user)
 
 	return merged
