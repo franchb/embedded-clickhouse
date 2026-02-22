@@ -8,12 +8,15 @@ import (
 	"time"
 )
 
-const healthPollInterval = 100 * time.Millisecond
+const (
+	healthPollInterval   = 100 * time.Millisecond
+	healthRequestTimeout = 2 * time.Second
+)
 
 // waitForReady polls the ClickHouse HTTP /ping endpoint until it returns HTTP 200 or the context is cancelled.
 func waitForReady(ctx context.Context, httpPort uint32) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/ping", httpPort)
-	client := &http.Client{Timeout: healthPollInterval}
+	client := &http.Client{Timeout: healthRequestTimeout}
 
 	// Immediate poll to avoid unnecessary 100ms latency when the server is already up.
 	if ping(ctx, client, url) {
@@ -41,7 +44,7 @@ func ping(ctx context.Context, client *http.Client, url string) bool {
 		return false
 	}
 
-	resp, err := client.Do(req) //nolint:gosec // URL is always http://127.0.0.1:<port>/ping, constructed internally
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

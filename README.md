@@ -139,7 +139,10 @@ func TestInsertAndSelect(t *testing.T) {
     ch := embeddedclickhouse.NewServerForTest(t)
     // Stop() is called via t.Cleanup
 
-    db, _ := sql.Open("clickhouse", ch.DSN())
+    db, err := sql.Open("clickhouse", ch.DSN())
+    if err != nil {
+        t.Fatal(err)
+    }
     defer db.Close()
 
     db.Exec(`CREATE TABLE t (id UInt64) ENGINE = MergeTree() ORDER BY id`)
