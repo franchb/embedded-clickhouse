@@ -43,6 +43,12 @@ var ErrInvalidPath = errors.New("embedded-clickhouse: invalid destination path")
 // ErrUnexpectedAddrType is returned when the listener address is not the expected *net.TCPAddr type.
 var ErrUnexpectedAddrType = errors.New("embedded-clickhouse: unexpected listener address type")
 
+// ErrUnknownAssetType is returned when an unrecognised platform asset type is encountered.
+var ErrUnknownAssetType = errors.New("embedded-clickhouse: unknown asset type")
+
+// ErrInvalidSettingKey is returned when a settings key contains characters that are unsafe in an XML element name.
+var ErrInvalidSettingKey = errors.New("embedded-clickhouse: invalid setting key")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config

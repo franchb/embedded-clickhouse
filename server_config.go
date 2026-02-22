@@ -84,7 +84,7 @@ type serverConfigData struct {
 func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
 	for k := range settings {
 		if !validSettingKey.MatchString(k) {
-			return "", fmt.Errorf("embedded-clickhouse: invalid setting key %q: must match [a-zA-Z][a-zA-Z0-9_]*", k)
+			return "", fmt.Errorf("%w: %q (must match [a-zA-Z][a-zA-Z0-9_]*)", ErrInvalidSettingKey, k)
 		}
 	}
 

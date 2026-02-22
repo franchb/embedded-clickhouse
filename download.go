@@ -66,7 +66,7 @@ func ensureBinary(cfg Config) (string, error) {
 			return "", err
 		}
 	default:
-		return "", fmt.Errorf("embedded-clickhouse: unknown asset type: %d", asset.assetType)
+		return "", fmt.Errorf("%w: %d", ErrUnknownAssetType, asset.assetType)
 	}
 
 	logf(cfg.logger, "Done.\n")
@@ -126,7 +126,7 @@ func downloadRawBinary(url, binPath string) error {
 }
 
 func downloadFile(url, destPath string) error {
-	resp, err := httpClient.Get(url) //nolint:gosec,noctx // URL is constructed internally
+	resp, err := httpClient.Get(url) //nolint:noctx // URL is constructed internally
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: download %s: %w", url, err)
 	}
@@ -157,7 +157,7 @@ func downloadFile(url, destPath string) error {
 }
 
 func verifySHA512(filePath, sha512URL, expectedFilename string, logger io.Writer) error {
-	resp, err := httpClient.Get(sha512URL) //nolint:gosec,noctx
+	resp, err := httpClient.Get(sha512URL) //nolint:noctx // URL is constructed internally
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: download SHA512: %w", err)
 	}

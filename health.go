@@ -41,7 +41,7 @@ func ping(ctx context.Context, client *http.Client, url string) bool {
 		return false
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL is derived from a loopback port, not user input
 	if err != nil {
 		return false
 	}
