@@ -1,6 +1,9 @@
 # embedded-clickhouse
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/franchb/embedded-clickhouse.svg)](https://pkg.go.dev/github.com/franchb/embedded-clickhouse)
+[![Go Report Card](https://goreportcard.com/badge/github.com/franchb/embedded-clickhouse)](https://goreportcard.com/report/github.com/franchb/embedded-clickhouse)
+[![codecov](https://codecov.io/gh/franchb/embedded-clickhouse/branch/main/graph/badge.svg)](https://codecov.io/gh/franchb/embedded-clickhouse)
+[![CI](https://github.com/franchb/embedded-clickhouse/actions/workflows/ci.yml/badge.svg)](https://github.com/franchb/embedded-clickhouse/actions/workflows/ci.yml)
 
 Run a real ClickHouse database locally on Linux or macOS as part of another Go application or test.
 
