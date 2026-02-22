@@ -1,0 +1,216 @@
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosec
+    - revive
+    - ineffassign
+    - gocritic
+    - testifylint
+    - modernize
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - cyclop
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - embeddedstructfieldcheck
+    - err113
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gochecknoinits
+    - gochecksumtype
+    - gocognit
+    - goconst
+    - godoclint
+    - godot
+    - gomoddirectives
+    - goprintffuncname
+    - iface
+    - intrange
+    - iotamixing
+    - makezero
+    - mirror
+    - misspell
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - perfsprint
+    - predeclared
+    - reassign
+    - recvcheck
+    - sqlclosecheck
+    - testableexamples
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - wsl_v5
+    - asasalint
+    - arangolint
+    - decorder
+    - exhaustruct
+    - depguard
+    - forbidigo
+    - funcorder
+    - funlen
+    - ginkgolinter
+    - gochecknoglobals
+    - godox
+    - goheader
+    - gomodguard
+    - gosmopolitan
+    - grouper
+    - importas
+    - inamedparam
+    - interfacebloat
+    - ireturn
+    - lll
+    - loggercheck
+    - maintidx
+    - mnd
+    - musttag
+    - paralleltest
+    - prealloc
+    - promlinter
+    - protogetter
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - tagalign
+    - tagliatelle
+    - testpackage
+    - unqueryvet
+    - varnamelen
+    - zerologlint
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Copy
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*compress/gzip.Reader).Close
+        - (*os/exec.Cmd).Wait
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (net.Listener).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*net/http.Server).Serve
+    gosec:
+      excludes:
+        # File/dir permissions — this library creates cache dirs and extracts binaries;
+        # 0755 is intentional and expected.
+        - G301
+        - G302
+        - G306
+        # Variable file paths are inherent to a library that downloads/caches binaries.
+        - G304
+        # Subprocess launch with variable args is the core purpose of this library.
+        - G204
+        # int->uint32 for port numbers from net.Listener is safe.
+        - G115
+        # Unchecked errors — covered by errcheck with exclude-functions config.
+        - G104
+    goconst:
+      min-occurrences: 4
+    funlen:
+      lines: 100
+      statements: 60
+    cyclop:
+      max-complexity: 16
+    mnd:
+      ignored-numbers:
+        - '0o755'
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+    varnamelen:
+      min-name-length: 2
+      ignore-names:
+        - db
+        - f
+        - gz
+        - h
+        - l
+        - r
+        - s
+        - tr
+        - ts
+        - tt
+        - l2
+        - s1
+        - s2
+    testpackage:
+      allow-packages:
+        - embeddedclickhouse
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: log
+              desc: "Use io.Writer-based logging instead."
+    exhaustruct:
+      exclude:
+        # stdlib types where partial init is idiomatic.
+        - '.*\.Client$'
+        - '.*\.Server$'
+        - '.*syscall\.SysProcAttr$'
+        # Anonymous structs (table-driven test cases).
+        - '.*<anonymous>$'
+        # Internal types using zero-value defaults by design.
+        - '.*embedded-clickhouse\.Config$'
+        - '.*embedded-clickhouse\.EmbeddedClickHouse$'
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - gosec
+          - errcheck
+          - cyclop
+          - forcetypeassert
+          - noctx
+          - lll
+
+formatters:
+  enable:
+    - gofumpt
