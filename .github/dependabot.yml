@@ -1,13 +1,30 @@
 version: 2
 updates:
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: "gomod"
+    commit-message:
+      prefix: "deps:"
+    directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: "weekly"
+      day: "monday"
+      time: "12:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
 
-  - package-ecosystem: gomod
-    directory: /
+  - package-ecosystem: "github-actions"
+    commit-message:
+      prefix: "deps:"
+    directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: "weekly"
+      day: "monday"
+      time: "12:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"
