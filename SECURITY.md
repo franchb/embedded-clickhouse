@@ -30,7 +30,7 @@ When using this library, please keep the following in mind:
 
 1. **Network Access**: The library downloads ClickHouse binaries from official sources. Ensure your environment allows outbound HTTPS connections to ClickHouse download servers.
 
-2. **Binary Verification**: Downloaded binaries are cached locally. Review the cache directory permissions (`~/.cache/embedded-clickhouse` by default).
+2. **Binary Verification**: Downloaded assets are verified against their SHA512 checksums before use. Binaries are then cached locally at `~/.cache/embedded-clickhouse` by default. Review the cache directory permissions on shared systems.
 
 3. **Test Environments Only**: This library is designed for testing. Do not use embedded ClickHouse instances in production.
 
