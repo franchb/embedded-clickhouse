@@ -222,16 +222,23 @@ The downloaded ClickHouse binary (~200MB for Linux, ~130MB for macOS) is cached 
     key: clickhouse-${{ runner.os }}-${{ runner.arch }}-25.8.16.34-lts
 ```
 
-## Memory limit
+## Memory limits
 
-The embedded server defaults to a **1 GiB** memory limit (`max_server_memory_usage`). Override it via `Settings()`:
+No server memory limit is imposed by default. ClickHouse uses its built-in ratio-based default (`max_server_memory_usage_to_ram_ratio = 0.9`), which caps the server at 90% of available RAM.
+
+ClickHouse has two separate memory settings:
+
+- **`max_server_memory_usage`** — server-wide ceiling across all queries and background operations
+- **`max_memory_usage`** — per-query limit (set in user profiles, not server config)
+
+For constrained CI environments, set an explicit server limit via `Settings()`:
 
 ```go
 embeddedclickhouse.DefaultConfig().
-    Settings(map[string]string{"max_server_memory_usage": "2147483648"}) // 2 GiB
+    Settings(map[string]string{"max_server_memory_usage": "1073741824"}) // 1 GiB
 ```
 
-ClickHouse applies the last occurrence of a setting in the config file, so any value passed through `Settings()` takes precedence over the built-in default.
+Environments with less than 2 GB total RAM will be fragile regardless of settings — ClickHouse needs memory for internal overhead (mark cache, logs, query cache, metadata) beyond query execution.
 
 ## How it works
 

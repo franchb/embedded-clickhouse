@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,9 +25,6 @@ const configTemplate = `<?xml version="1.0"?>
     <tmp_path>{{xmlEscape .TmpDir}}/</tmp_path>
     <user_files_path>{{xmlEscape .UserFilesDir}}/</user_files_path>
     <format_schema_path>{{xmlEscape .FormatSchemaDir}}/</format_schema_path>
-
-    <!-- 1 GiB default; override via Settings({"max_server_memory_usage": "..."}) -->
-    <max_server_memory_usage>1073741824</max_server_memory_usage>
 
     <users>
         <default>
@@ -53,6 +51,21 @@ const configTemplate = `<?xml version="1.0"?>
 {{end}}
 </clickhouse>
 `
+
+// defaultServerSettings are baked into every generated config.
+// User-supplied Settings override these values; any key not overridden
+// keeps its default.
+var defaultServerSettings = map[string]string{}
+
+// mergeSettings returns defaultServerSettings with user values overlaid.
+// A nil input returns a copy of the defaults.
+func mergeSettings(user map[string]string) map[string]string {
+	merged := make(map[string]string, len(defaultServerSettings)+len(user))
+	maps.Copy(merged, defaultServerSettings)
+	maps.Copy(merged, user)
+
+	return merged
+}
 
 // validSettingKey matches safe XML element names for ClickHouse settings.
 var validSettingKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
@@ -114,7 +127,7 @@ func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string
 		TmpDir:          tmpDir,
 		UserFilesDir:    userFilesDir,
 		FormatSchemaDir: formatSchemaDir,
-		Settings:        settings,
+		Settings:        mergeSettings(settings),
 	}
 
 	if err := configTmpl.Execute(f, data); err != nil {
