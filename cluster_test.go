@@ -129,9 +129,7 @@ func TestAllocateClusterNodePorts(t *testing.T) {
 
 // --- Integration tests (skipped in short mode) ---
 
-func TestIntegration_ClusterStartStop(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterStartStop(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -166,9 +164,7 @@ func TestIntegration_ClusterStartStop(t *testing.T) {
 	assert.ErrorIs(t, cl.Stop(), ErrClusterNotStarted)
 }
 
-func TestIntegration_ClusterReplication(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterReplication(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -216,9 +212,7 @@ func TestIntegration_ClusterReplication(t *testing.T) {
 	assert.Equal(t, 2, count)
 }
 
-func TestIntegration_ClusterNewClusterForTest(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterNewClusterForTest(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -235,9 +229,7 @@ func TestIntegration_ClusterNewClusterForTest(t *testing.T) {
 	assert.Equal(t, 2, result)
 }
 
-func TestIntegration_ClusterKeeperMetadata(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterKeeperMetadata(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -268,9 +260,7 @@ func TestIntegration_ClusterKeeperMetadata(t *testing.T) {
 	assert.Positive(t, znodeCount, "expected Keeper znodes for replicated table metadata")
 }
 
-func TestIntegration_ClusterSystemReplicas(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterSystemReplicas(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -314,9 +304,7 @@ func TestIntegration_ClusterSystemReplicas(t *testing.T) {
 	}
 }
 
-func TestIntegration_ClusterAlterOnCluster(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterAlterOnCluster(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -358,9 +346,7 @@ func TestIntegration_ClusterAlterOnCluster(t *testing.T) {
 	}
 }
 
-func TestIntegration_ClusterInsertDeduplication(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterInsertDeduplication(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -395,9 +381,7 @@ func TestIntegration_ClusterInsertDeduplication(t *testing.T) {
 	assert.Equal(t, 3, count, "expected deduplication to prevent double insert")
 }
 
-func TestIntegration_ClusterDistributedQuery(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterDistributedQuery(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -442,9 +426,7 @@ func TestIntegration_ClusterDistributedQuery(t *testing.T) {
 	assert.Equal(t, 6, total, "clusterAllReplicas should return rows from all 3 replicas")
 }
 
-func TestIntegration_ClusterReplicationToAllNodes(t *testing.T) {
-	t.Parallel()
-
+func TestIntegration_ClusterReplicationToAllNodes(t *testing.T) { //nolint:paralleltest // cluster tests run serially to avoid OOM on CI
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

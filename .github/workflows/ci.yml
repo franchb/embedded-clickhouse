@@ -46,7 +46,7 @@ jobs:
 
       - name: Run tests (full, with integration)
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        run: go test -v -race -count=1 -coverprofile=coverage.out ./...
+        run: go test -v -race -count=1 -timeout 14m -coverprofile=coverage.out ./...
 
       - name: Upload Coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
