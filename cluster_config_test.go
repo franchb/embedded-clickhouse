@@ -58,8 +58,6 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 		// Distributed DDL.
 		"<distributed_ddl>",
 		"<path>/clickhouse/task_queue/ddl</path>",
-		// Default memory limit.
-		"<max_server_memory_usage>1073741824</max_server_memory_usage>",
 	}
 
 	for _, check := range checks {
@@ -133,30 +131,29 @@ func TestWriteClusterNodeConfig_CreatesKeeperDirs(t *testing.T) {
 	}
 }
 
-func TestBuildClusterTopology_DefaultMemory(t *testing.T) {
+func TestBuildClusterTopology_NilSettings(t *testing.T) {
 	t.Parallel()
 
 	topo := buildClusterTopology([]clusterNodePorts{
 		{TCP: 1, HTTP: 2, Interserver: 3, Keeper: 4, KeeperRaft: 5},
 	}, nil)
 
-	if topo.Settings["max_server_memory_usage"] != defaultClusterMemoryUsage {
-		t.Errorf("expected default memory %s, got %s", defaultClusterMemoryUsage, topo.Settings["max_server_memory_usage"])
+	if len(topo.Settings) != 0 {
+		t.Errorf("expected empty settings for nil input, got %v", topo.Settings)
 	}
 }
 
-func TestBuildClusterTopology_UserOverrideMemory(t *testing.T) {
+func TestBuildClusterTopology_UserSettings(t *testing.T) {
 	t.Parallel()
 
-	override := "2147483648"
 	topo := buildClusterTopology([]clusterNodePorts{
 		{TCP: 1, HTTP: 2, Interserver: 3, Keeper: 4, KeeperRaft: 5},
 	}, map[string]string{
-		"max_server_memory_usage": override,
+		"max_server_memory_usage": "2147483648",
 	})
 
-	if topo.Settings["max_server_memory_usage"] != override {
-		t.Errorf("expected user override %s, got %s", override, topo.Settings["max_server_memory_usage"])
+	if topo.Settings["max_server_memory_usage"] != "2147483648" {
+		t.Errorf("expected user setting, got %s", topo.Settings["max_server_memory_usage"])
 	}
 }
 

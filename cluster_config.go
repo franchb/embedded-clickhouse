@@ -8,11 +8,6 @@ import (
 	"text/template"
 )
 
-// defaultClusterMemoryUsage is the per-node max_server_memory_usage injected
-// into cluster configs unless the user overrides it. 1 GiB keeps 3-node
-// clusters from OOM-killing CI runners.
-const defaultClusterMemoryUsage = "1073741824"
-
 const clusterConfigTemplate = `<?xml version="1.0"?>
 <clickhouse>
     <logger>
@@ -166,12 +161,8 @@ type clusterNodeConfigData struct {
 
 // buildClusterTopology creates a clusterTopology from allocated ports and user settings.
 func buildClusterTopology(ports []clusterNodePorts, settings map[string]string) clusterTopology {
-	merged := make(map[string]string, len(settings)+1)
+	merged := make(map[string]string, len(settings))
 	maps.Copy(merged, settings)
-
-	if _, ok := merged["max_server_memory_usage"]; !ok {
-		merged["max_server_memory_usage"] = defaultClusterMemoryUsage
-	}
 
 	return clusterTopology{
 		Nodes:    ports,
