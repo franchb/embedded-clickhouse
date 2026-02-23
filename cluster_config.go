@@ -18,6 +18,7 @@ const clusterConfigTemplate = `<?xml version="1.0"?>
     <tcp_port>{{.TCPPort}}</tcp_port>
     <http_port>{{.HTTPPort}}</http_port>
     <interserver_http_port>{{.InterserverPort}}</interserver_http_port>
+    <interserver_http_host>127.0.0.1</interserver_http_host>
 
     <path>{{xmlEscape .DataDir}}/</path>
     <tmp_path>{{xmlEscape .TmpDir}}/</tmp_path>

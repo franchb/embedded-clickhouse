@@ -40,6 +40,7 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 		"<tcp_port>19000</tcp_port>",
 		"<http_port>18123</http_port>",
 		"<interserver_http_port>19009</interserver_http_port>",
+		"<interserver_http_host>127.0.0.1</interserver_http_host>",
 		"<server_id>1</server_id>",
 		"<shard>01</shard>",
 		"<replica>replica_01</replica>",

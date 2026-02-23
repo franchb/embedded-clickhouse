@@ -176,7 +176,8 @@ func TestIntegration_ClusterReplication(t *testing.T) { //nolint:paralleltest //
 		require.NoError(t, cl.Stop())
 	}()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
@@ -387,7 +388,9 @@ func TestIntegration_ClusterDistributedQuery(t *testing.T) { //nolint:parallelte
 	}
 
 	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
@@ -432,7 +435,9 @@ func TestIntegration_ClusterReplicationToAllNodes(t *testing.T) { //nolint:paral
 	}
 
 	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
