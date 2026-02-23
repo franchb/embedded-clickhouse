@@ -94,6 +94,10 @@ const clusterConfigTemplate = `<?xml version="1.0"?>
         </test_cluster>
     </remote_servers>
 
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+
     <macros>
         <shard>01</shard>
         <replica>{{.ReplicaName}}</replica>

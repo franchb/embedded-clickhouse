@@ -55,6 +55,9 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 		"<port>19000</port>",
 		"<port>29000</port>",
 		"<port>39000</port>",
+		// Distributed DDL.
+		"<distributed_ddl>",
+		"<path>/clickhouse/task_queue/ddl</path>",
 		// Default memory limit.
 		"<max_server_memory_usage>1073741824</max_server_memory_usage>",
 	}
