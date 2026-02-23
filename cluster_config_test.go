@@ -44,6 +44,7 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 		"<server_id>1</server_id>",
 		"<shard>01</shard>",
 		"<replica>replica_01</replica>",
+		"<cluster>test_cluster</cluster>",
 		// Keeper ports from all 3 nodes in raft_configuration.
 		"<port>19234</port>",
 		"<port>29234</port>",
@@ -155,6 +156,45 @@ func TestBuildClusterTopology_UserSettings(t *testing.T) {
 
 	if topo.Settings["max_server_memory_usage"] != "2147483648" {
 		t.Errorf("expected user setting, got %s", topo.Settings["max_server_memory_usage"])
+	}
+}
+
+func TestWriteClusterNodeConfig_SettingsSortedDeterministically(t *testing.T) {
+	t.Parallel()
+
+	topo := buildClusterTopology(
+		[]clusterNodePorts{{TCP: 1, HTTP: 2, Interserver: 3, Keeper: 4, KeeperRaft: 5}},
+		map[string]string{
+			"max_memory_usage":        "1000000000",
+			"allow_introspection":     "1",
+			"max_server_memory_usage": "2147483648",
+		},
+	)
+	dir := t.TempDir()
+
+	configPath, err := writeClusterNodeConfig(dir, 0, topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xml := string(content)
+
+	// Settings must appear in alphabetical order.
+	idxAllow := strings.Index(xml, "<allow_introspection>")
+	idxMemory := strings.Index(xml, "<max_memory_usage>")
+	idxServer := strings.Index(xml, "<max_server_memory_usage>")
+
+	if idxAllow == -1 || idxMemory == -1 || idxServer == -1 {
+		t.Fatal("one or more settings missing from config")
+	}
+
+	if idxAllow >= idxMemory || idxMemory >= idxServer {
+		t.Error("settings are not sorted alphabetically")
 	}
 }
 

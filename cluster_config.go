@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"text/template"
 )
 
@@ -97,9 +98,10 @@ const clusterConfigTemplate = `<?xml version="1.0"?>
     <macros>
         <shard>01</shard>
         <replica>{{.ReplicaName}}</replica>
+        <cluster>test_cluster</cluster>
     </macros>
-{{range $key, $value := .Settings}}
-    <{{$key}}>{{xmlEscape $value}}</{{$key}}>
+{{range .Settings}}
+    <{{.Key}}>{{xmlEscape .Value}}</{{.Key}}>
 {{- end}}
 </clickhouse>
 `
@@ -140,6 +142,13 @@ type clusterTopology struct {
 	Settings map[string]string
 }
 
+// settingEntry is a key-value pair for a ClickHouse setting,
+// used to ensure deterministic ordering in the generated XML.
+type settingEntry struct {
+	Key   string
+	Value string
+}
+
 // clusterNodeConfigData is the template data for a single cluster node.
 type clusterNodeConfigData struct {
 	TCPPort           uint32
@@ -157,7 +166,7 @@ type clusterNodeConfigData struct {
 	RaftServers       []raftServer
 	KeeperNodes       []keeperNode
 	ClusterReplicas   []clusterReplica
-	Settings          map[string]string
+	Settings          []settingEntry
 }
 
 // buildClusterTopology creates a clusterTopology from allocated ports and user settings.
@@ -173,10 +182,16 @@ func buildClusterTopology(ports []clusterNodePorts, settings map[string]string) 
 
 // writeClusterNodeConfig generates a ClickHouse XML config for one cluster node.
 func writeClusterNodeConfig(dir string, nodeIndex int, topo clusterTopology) (string, error) {
-	for k := range topo.Settings {
+	sortedKeys := slices.Sorted(maps.Keys(topo.Settings))
+
+	settings := make([]settingEntry, 0, len(sortedKeys))
+
+	for _, k := range sortedKeys {
 		if !validSettingKey.MatchString(k) {
 			return "", fmt.Errorf("%w: %q (must match [a-zA-Z][a-zA-Z0-9_]*)", ErrInvalidSettingKey, k)
 		}
+
+		settings = append(settings, settingEntry{Key: k, Value: topo.Settings[k]})
 	}
 
 	node := topo.Nodes[nodeIndex]
@@ -220,7 +235,7 @@ func writeClusterNodeConfig(dir string, nodeIndex int, topo clusterTopology) (st
 		RaftServers:       raftServers,
 		KeeperNodes:       keeperNodes,
 		ClusterReplicas:   clusterReplicas,
-		Settings:          topo.Settings,
+		Settings:          settings,
 	}
 
 	configPath := filepath.Join(dir, "config.xml")
@@ -232,6 +247,8 @@ func writeClusterNodeConfig(dir string, nodeIndex int, topo clusterTopology) (st
 
 	if err := clusterConfigTmpl.Execute(f, data); err != nil {
 		f.Close()
+
+		_ = os.Remove(configPath)
 
 		return "", fmt.Errorf("embedded-clickhouse: write cluster config: %w", err)
 	}

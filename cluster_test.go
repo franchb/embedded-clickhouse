@@ -242,7 +242,8 @@ func TestIntegration_ClusterKeeperMetadata(t *testing.T) { //nolint:paralleltest
 
 	defer db.Close()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	_, err = db.ExecContext(ctx, `
 		CREATE TABLE test_keeper_meta ON CLUSTER 'test_cluster' (
@@ -267,7 +268,9 @@ func TestIntegration_ClusterSystemReplicas(t *testing.T) { //nolint:paralleltest
 	}
 
 	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
@@ -311,7 +314,9 @@ func TestIntegration_ClusterAlterOnCluster(t *testing.T) { //nolint:paralleltest
 	}
 
 	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
@@ -353,7 +358,9 @@ func TestIntegration_ClusterInsertDeduplication(t *testing.T) { //nolint:paralle
 	}
 
 	cl := NewClusterForTest(t, 2, DefaultConfig().Logger(io.Discard))
-	ctx := context.Background()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
 	require.NoError(t, err)
@@ -456,38 +463,42 @@ func TestIntegration_ClusterReplicationToAllNodes(t *testing.T) { //nolint:paral
 	_, err = db0.ExecContext(ctx, "INSERT INTO test_repl_all (id, name) VALUES (1, 'alice'), (2, 'bob')")
 	require.NoError(t, err)
 
+	type row struct {
+		id   uint64
+		name string
+	}
+
 	// Verify row-level data on every other node.
 	for ri := 1; ri < 3; ri++ {
-		db, dbErr := sql.Open("clickhouse", cl.Node(ri).DSN())
-		require.NoError(t, dbErr)
+		got := func(nodeIdx int) []row {
+			db, dbErr := sql.Open("clickhouse", cl.Node(nodeIdx).DSN())
+			require.NoError(t, dbErr)
 
-		_, syncErr := db.ExecContext(ctx, "SYSTEM SYNC REPLICA test_repl_all")
-		require.NoError(t, syncErr, "node %d sync", ri)
+			defer db.Close()
 
-		rows, qErr := db.QueryContext(ctx, "SELECT id, name FROM test_repl_all ORDER BY id")
-		require.NoError(t, qErr, "node %d query", ri)
+			_, syncErr := db.ExecContext(ctx, "SYSTEM SYNC REPLICA test_repl_all")
+			require.NoError(t, syncErr, "node %d sync", nodeIdx)
 
-		defer rows.Close()
+			rows, qErr := db.QueryContext(ctx, "SELECT id, name FROM test_repl_all ORDER BY id")
+			require.NoError(t, qErr, "node %d query", nodeIdx)
 
-		type row struct {
-			id   uint64
-			name string
-		}
+			defer rows.Close()
 
-		var got []row
+			var result []row
 
-		for rows.Next() {
-			var r row
-			require.NoError(t, rows.Scan(&r.id, &r.name))
+			for rows.Next() {
+				var r row
+				require.NoError(t, rows.Scan(&r.id, &r.name))
 
-			got = append(got, r)
-		}
+				result = append(result, r)
+			}
 
-		require.NoError(t, rows.Err())
+			require.NoError(t, rows.Err())
+
+			return result
+		}(ri)
 
 		expected := []row{{1, "alice"}, {2, "bob"}}
 		assert.Equal(t, expected, got, "node %d: row data mismatch", ri)
-
-		db.Close()
 	}
 }
