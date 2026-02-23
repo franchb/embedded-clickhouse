@@ -174,8 +174,16 @@ linters:
         - ts
         - tt
         - l2
+        - i
         - s1
         - s2
+        - c
+        - cl
+        - db0
+        - db1
+        - db2
+        - np
+        - ri
     testpackage:
       allow-packages:
         - embeddedclickhouse
@@ -196,6 +204,7 @@ linters:
         # Internal types using zero-value defaults by design.
         - '.*embedded-clickhouse\.Config$'
         - '.*embedded-clickhouse\.EmbeddedClickHouse$'
+        - '.*embedded-clickhouse\.Cluster$'
     revive:
       rules:
         - name: exported

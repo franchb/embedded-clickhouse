@@ -49,6 +49,9 @@ var ErrUnknownAssetType = errors.New("embedded-clickhouse: unknown asset type")
 // ErrInvalidSettingKey is returned when a settings key contains characters that are unsafe in an XML element name.
 var ErrInvalidSettingKey = errors.New("embedded-clickhouse: invalid setting key")
 
+// ErrClusterManaged is returned when Start or Stop is called on a node owned by a Cluster.
+var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cluster; use Cluster.Start/Stop")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
@@ -58,8 +61,12 @@ type EmbeddedClickHouse struct {
 	cmd     *exec.Cmd
 	tmpDir  string
 
-	tcpPort  uint32
-	httpPort uint32
+	tcpPort         uint32
+	httpPort        uint32
+	interserverPort uint32
+	keeperPort      uint32
+	keeperRaftPort  uint32
+	clusterManaged  bool
 }
 
 // NewServer creates a new EmbeddedClickHouse with the given config.
@@ -96,9 +103,13 @@ func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 }
 
 // Start downloads the ClickHouse binary (if needed), generates config, and starts the server.
-func (e *EmbeddedClickHouse) Start() error {
+func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard adds one branch
 	e.mu.Lock() // write lock: modifies started, cmd, ports
 	defer e.mu.Unlock()
+
+	if e.clusterManaged {
+		return ErrClusterManaged
+	}
 
 	if e.started {
 		return ErrServerAlreadyStarted
@@ -202,6 +213,10 @@ func (e *EmbeddedClickHouse) Start() error {
 func (e *EmbeddedClickHouse) Stop() error {
 	e.mu.Lock() // write lock: resets started, cmd, ports
 	defer e.mu.Unlock()
+
+	if e.clusterManaged {
+		return ErrClusterManaged
+	}
 
 	if !e.started {
 		return ErrServerNotStarted
