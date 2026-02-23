@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultClusterStartTimeout = 120 * time.Second
+	defaultClusterStartTimeout = 180 * time.Second
 	keeperQuorumPollInterval   = 500 * time.Millisecond
 	minReplicas                = 2
 )
