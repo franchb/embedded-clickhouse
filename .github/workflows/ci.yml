@@ -12,7 +12,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -40,8 +40,13 @@ jobs:
           path: ~/.cache/embedded-clickhouse
           key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config.go') }}
 
-      - name: Run tests
-        run: go test -short -race -count=1 -coverprofile=coverage.out ./...
+      - name: Run tests (short)
+        if: matrix.os != 'ubuntu-latest' || matrix.go-version != 'stable'
+        run: go test -short -race -count=1 ./...
+
+      - name: Run tests (full, with integration)
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        run: go test -v -race -count=1 -timeout 14m -coverprofile=coverage.out ./...
 
       - name: Upload Coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'

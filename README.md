@@ -157,6 +157,72 @@ func TestInsertAndSelect(t *testing.T) {
 }
 ```
 
+## Cluster mode
+
+Cluster mode runs multiple ClickHouse replicas on localhost using embedded Keeper (Raft-based coordination built into the ClickHouse binary). No additional binaries or Docker containers needed.
+
+This enables testing `ReplicatedMergeTree` tables with `ON CLUSTER` queries — the same binary handles both the database engine and the coordination layer.
+
+### Quick start (cluster)
+
+```go
+func TestReplication(t *testing.T) {
+    cluster := embeddedclickhouse.NewClusterForTest(t, 3)
+    // 3 nodes start automatically; t.Cleanup calls Stop()
+
+    db, err := sql.Open("clickhouse", cluster.DSN())
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer db.Close()
+
+    db.Exec(`CREATE TABLE t ON CLUSTER 'test_cluster' (id UInt64)
+        ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/t', '{replica}')
+        ORDER BY id`)
+    db.Exec(`INSERT INTO t VALUES (1), (2), (3)`)
+
+    // Read from a different replica:
+    db1, _ := sql.Open("clickhouse", cluster.Node(1).DSN())
+    defer db1.Close()
+    db1.Exec("SYSTEM SYNC REPLICA t")
+
+    var count int
+    db1.QueryRow("SELECT count() FROM t").Scan(&count)
+    // count == 3
+}
+```
+
+### Manual Start/Stop (cluster)
+
+```go
+cluster := embeddedclickhouse.NewCluster(3)
+if err := cluster.Start(); err != nil {
+    log.Fatal(err)
+}
+defer cluster.Stop()
+
+cluster.DSN()           // DSN for node 0
+cluster.Node(0).DSN()   // same as above
+cluster.Node(1).DSN()   // DSN for node 1
+cluster.ClusterName()   // "test_cluster"
+```
+
+### Cluster defaults
+
+| Configuration           | Default                 |
+|-------------------------|-------------------------|
+| Replicas                | User-specified (min 2)  |
+| Start Timeout           | 120 seconds             |
+| Memory per node         | 1 GiB (`max_server_memory_usage`) |
+| Cluster name            | `test_cluster`          |
+| All ports               | Auto-allocated          |
+
+Each node requires 5 ports (TCP, HTTP, interserver HTTP, Keeper client, Keeper Raft), all auto-allocated on localhost. The 1 GiB per-node memory default prevents OOM on CI machines running 3 replicas. Override via `Settings(map[string]string{"max_server_memory_usage": "2147483648"})`.
+
+### Composability
+
+embedded-clickhouse handles ClickHouse itself. For external dependencies (Kafka, S3, etc.), combine with testcontainers or docker-compose — ClickHouse connects to them via exposed ports.
+
 ## Configuration reference
 
 All configuration methods use a builder pattern with value receivers, so the original config is never mutated:

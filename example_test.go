@@ -14,7 +14,7 @@ func ExampleNewServer() {
 		return
 	}
 
-	ch := embeddedclickhouse.NewServer()
+	ch := embeddedclickhouse.NewServer(embeddedclickhouse.DefaultConfig().Logger(io.Discard))
 	if err := ch.Start(); err != nil {
 		panic(err)
 	}
@@ -64,7 +64,7 @@ func ExampleEmbeddedClickHouse_DSN() {
 		return
 	}
 
-	ch := embeddedclickhouse.NewServer()
+	ch := embeddedclickhouse.NewServer(embeddedclickhouse.DefaultConfig().Logger(io.Discard))
 	if err := ch.Start(); err != nil {
 		panic(err)
 	}
