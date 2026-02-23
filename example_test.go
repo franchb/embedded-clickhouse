@@ -58,46 +58,6 @@ func ExampleConfig_Settings() {
 	// Output:
 }
 
-// ExampleNewCluster demonstrates starting a 3-node ClickHouse cluster for replication testing.
-func ExampleNewCluster() {
-	if testing.Short() {
-		return
-	}
-
-	cluster := embeddedclickhouse.NewCluster(3, embeddedclickhouse.DefaultConfig().Logger(io.Discard))
-	if err := cluster.Start(); err != nil {
-		panic(err)
-	}
-	defer cluster.Stop()
-
-	// cluster.DSN()          => DSN for node 0
-	// cluster.Node(0).DSN()  => same as above
-	// cluster.Node(1).DSN()  => DSN for node 1
-	// cluster.ClusterName()  => "test_cluster"
-	//
-	// Use ON CLUSTER queries with ReplicatedMergeTree:
-	//   CREATE TABLE t ON CLUSTER 'test_cluster' (id UInt64)
-	//     ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/t', '{replica}')
-	//     ORDER BY id
-
-	// Output:
-}
-
-// ExampleNewClusterForTest demonstrates the per-test cluster helper pattern.
-func ExampleNewClusterForTest() {
-	if testing.Short() {
-		return
-	}
-
-	// In a real test, pass *testing.T here. The cluster starts automatically
-	// and t.Cleanup registers Stop() for teardown.
-	//
-	// cluster := embeddedclickhouse.NewClusterForTest(t, 3)
-	// db, _ := sql.Open("clickhouse", cluster.DSN())
-
-	// Output:
-}
-
 // ExampleEmbeddedClickHouse_DSN documents the DSN accessor.
 func ExampleEmbeddedClickHouse_DSN() {
 	if testing.Short() {

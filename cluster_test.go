@@ -234,3 +234,273 @@ func TestIntegration_ClusterNewClusterForTest(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT 1+1").Scan(&result))
 	assert.Equal(t, 2, result)
 }
+
+func TestIntegration_ClusterKeeperMetadata(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
+
+	db, err := sql.Open("clickhouse", cl.DSN())
+	require.NoError(t, err)
+
+	defer db.Close()
+
+	ctx := context.Background()
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE test_keeper_meta ON CLUSTER 'test_cluster' (
+			id UInt64
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_keeper_meta', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	var znodeCount int
+
+	err = db.QueryRowContext(ctx,
+		"SELECT count() FROM system.zookeeper WHERE path = '/clickhouse/tables/01/test_keeper_meta'",
+	).Scan(&znodeCount)
+	require.NoError(t, err)
+	assert.Positive(t, znodeCount, "expected Keeper znodes for replicated table metadata")
+}
+
+func TestIntegration_ClusterSystemReplicas(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
+	ctx := context.Background()
+
+	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
+	require.NoError(t, err)
+
+	defer db0.Close()
+
+	_, err = db0.ExecContext(ctx, `
+		CREATE TABLE test_sys_replicas ON CLUSTER 'test_cluster' (
+			id UInt64
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_sys_replicas', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	for ri := range 3 {
+		db, dbErr := sql.Open("clickhouse", cl.Node(ri).DSN())
+		require.NoError(t, dbErr)
+
+		var isLeader, totalReplicas, activeReplicas uint8
+
+		var isSessionExpired uint8
+
+		err = db.QueryRowContext(ctx, `
+			SELECT is_leader, total_replicas, active_replicas, is_session_expired
+			FROM system.replicas
+			WHERE table = 'test_sys_replicas'
+		`).Scan(&isLeader, &totalReplicas, &activeReplicas, &isSessionExpired)
+		require.NoError(t, err, "node %d", ri)
+
+		assert.Equal(t, uint8(3), totalReplicas, "node %d: total_replicas", ri)
+		assert.Equal(t, uint8(3), activeReplicas, "node %d: active_replicas", ri)
+		assert.Equal(t, uint8(0), isSessionExpired, "node %d: is_session_expired", ri)
+
+		db.Close()
+	}
+}
+
+func TestIntegration_ClusterAlterOnCluster(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
+	ctx := context.Background()
+
+	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
+	require.NoError(t, err)
+
+	defer db0.Close()
+
+	_, err = db0.ExecContext(ctx, `
+		CREATE TABLE test_alter ON CLUSTER 'test_cluster' (
+			id UInt64
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_alter', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	_, err = db0.ExecContext(ctx,
+		"ALTER TABLE test_alter ON CLUSTER 'test_cluster' ADD COLUMN name String DEFAULT ''",
+	)
+	require.NoError(t, err)
+
+	for ri := range 3 {
+		db, dbErr := sql.Open("clickhouse", cl.Node(ri).DSN())
+		require.NoError(t, dbErr)
+
+		var colCount int
+
+		err = db.QueryRowContext(ctx,
+			"SELECT count() FROM system.columns WHERE table = 'test_alter' AND name = 'name'",
+		).Scan(&colCount)
+		require.NoError(t, err, "node %d", ri)
+		assert.Equal(t, 1, colCount, "node %d: expected 'name' column after ALTER", ri)
+
+		db.Close()
+	}
+}
+
+func TestIntegration_ClusterInsertDeduplication(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 2, DefaultConfig().Logger(io.Discard))
+	ctx := context.Background()
+
+	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
+	require.NoError(t, err)
+
+	defer db0.Close()
+
+	_, err = db0.ExecContext(ctx, `
+		CREATE TABLE test_dedup ON CLUSTER 'test_cluster' (
+			id UInt64
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_dedup', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	block := "INSERT INTO test_dedup (id) VALUES (1), (2), (3)"
+
+	_, err = db0.ExecContext(ctx, block)
+	require.NoError(t, err)
+
+	// Insert the same block again — should be deduplicated.
+	_, err = db0.ExecContext(ctx, block)
+	require.NoError(t, err)
+
+	var count int
+	require.NoError(t, db0.QueryRowContext(ctx, "SELECT count() FROM test_dedup").Scan(&count))
+	assert.Equal(t, 3, count, "expected deduplication to prevent double insert")
+}
+
+func TestIntegration_ClusterDistributedQuery(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
+	ctx := context.Background()
+
+	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
+	require.NoError(t, err)
+
+	defer db0.Close()
+
+	_, err = db0.ExecContext(ctx, `
+		CREATE TABLE test_dist ON CLUSTER 'test_cluster' (
+			id UInt64
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_dist', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	_, err = db0.ExecContext(ctx, "INSERT INTO test_dist (id) VALUES (1), (2)")
+	require.NoError(t, err)
+
+	// Sync all replicas.
+	for ri := 1; ri < 3; ri++ {
+		db, dbErr := sql.Open("clickhouse", cl.Node(ri).DSN())
+		require.NoError(t, dbErr)
+
+		_, syncErr := db.ExecContext(ctx, "SYSTEM SYNC REPLICA test_dist")
+		require.NoError(t, syncErr, "node %d sync", ri)
+
+		db.Close()
+	}
+
+	// clusterAllReplicas reads from every replica: 2 rows × 3 replicas = 6.
+	var total int
+
+	err = db0.QueryRowContext(ctx,
+		"SELECT count() FROM clusterAllReplicas('test_cluster', currentDatabase(), 'test_dist')",
+	).Scan(&total)
+	require.NoError(t, err)
+	assert.Equal(t, 6, total, "clusterAllReplicas should return rows from all 3 replicas")
+}
+
+func TestIntegration_ClusterReplicationToAllNodes(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	cl := NewClusterForTest(t, 3, DefaultConfig().Logger(io.Discard))
+	ctx := context.Background()
+
+	db0, err := sql.Open("clickhouse", cl.Node(0).DSN())
+	require.NoError(t, err)
+
+	defer db0.Close()
+
+	_, err = db0.ExecContext(ctx, `
+		CREATE TABLE test_repl_all ON CLUSTER 'test_cluster' (
+			id UInt64,
+			name String
+		) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_repl_all', '{replica}')
+		ORDER BY id
+	`)
+	require.NoError(t, err)
+
+	_, err = db0.ExecContext(ctx, "INSERT INTO test_repl_all (id, name) VALUES (1, 'alice'), (2, 'bob')")
+	require.NoError(t, err)
+
+	// Verify row-level data on every other node.
+	for ri := 1; ri < 3; ri++ {
+		db, dbErr := sql.Open("clickhouse", cl.Node(ri).DSN())
+		require.NoError(t, dbErr)
+
+		_, syncErr := db.ExecContext(ctx, "SYSTEM SYNC REPLICA test_repl_all")
+		require.NoError(t, syncErr, "node %d sync", ri)
+
+		rows, qErr := db.QueryContext(ctx, "SELECT id, name FROM test_repl_all ORDER BY id")
+		require.NoError(t, qErr, "node %d query", ri)
+
+		defer rows.Close()
+
+		type row struct {
+			id   uint64
+			name string
+		}
+
+		var got []row
+
+		for rows.Next() {
+			var r row
+			require.NoError(t, rows.Scan(&r.id, &r.name))
+
+			got = append(got, r)
+		}
+
+		require.NoError(t, rows.Err())
+
+		expected := []row{{1, "alice"}, {2, "bob"}}
+		assert.Equal(t, expected, got, "node %d: row data mismatch", ri)
+
+		db.Close()
+	}
+}
