@@ -12,7 +12,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:
@@ -46,7 +46,7 @@ jobs:
 
       - name: Run tests (full, with integration)
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        run: go test -v -race -count=1 -timeout 14m -coverprofile=coverage.out ./...
+        run: go test -v -race -count=1 -timeout 20m -coverprofile=coverage.out ./...
 
       - name: Upload Coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'

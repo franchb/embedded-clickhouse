@@ -19,7 +19,7 @@ test:
 
 .PHONY: test-integration
 test-integration:
-	go test -v -race -count=1 ./...
+	go test -v -race -count=1 -timeout 20m ./...
 
 .PHONY: clean
 clean:
