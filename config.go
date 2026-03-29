@@ -10,6 +10,9 @@ import (
 // ClickHouseVersion represents a ClickHouse server version string.
 type ClickHouseVersion string
 
+// V26_3 is ClickHouse 26.3 (LTS channel).
+const V26_3 ClickHouseVersion = "26.3.2.3-lts"
+
 // V26_1 is ClickHouse 26.1 (stable channel).
 const V26_1 ClickHouseVersion = "26.1.3.52-stable"
 
@@ -20,7 +23,7 @@ const V25_8 ClickHouseVersion = "25.8.16.34-lts"
 const V25_3 ClickHouseVersion = "25.3.14.14-lts"
 
 // DefaultVersion is the default ClickHouse version used when none is specified.
-const DefaultVersion = V25_8
+const DefaultVersion = V26_3
 
 // Config holds configuration for an embedded ClickHouse server.
 type Config struct {

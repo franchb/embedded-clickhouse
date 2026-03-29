@@ -97,6 +97,7 @@ func TestNumericVersion(t *testing.T) {
 		in   ClickHouseVersion
 		want string
 	}{
+		{V26_3, "26.3.2.3"},
 		{V25_8, "25.8.16.34"},
 		{V25_3, "25.3.14.14"},
 		{V26_1, "26.1.3.52"},
