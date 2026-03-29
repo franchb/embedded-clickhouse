@@ -66,7 +66,7 @@ func TestQuery(t *testing.T) {
 
 | Configuration      | Default                                              |
 |--------------------|------------------------------------------------------|
-| Version            | `V25_8` (25.8.16.34-lts)                            |
+| Version            | `V26_3` (26.3.2.3-lts)                              |
 | TCP Port           | Auto-allocated                                       |
 | HTTP Port          | Auto-allocated                                       |
 | Cache Path         | `$XDG_CACHE_HOME/embedded-clickhouse/` or `~/.cache/embedded-clickhouse/` |
@@ -250,8 +250,9 @@ custom := base.Version(embeddedclickhouse.V25_3) // base is unchanged
 
 | Constant | Version               | Channel |
 |----------|-----------------------|---------|
+| `V26_3`  | 26.3.2.3-lts          | LTS (default) |
 | `V26_1`  | 26.1.3.52-stable      | Stable  |
-| `V25_8`  | 25.8.16.34-lts        | LTS (default) |
+| `V25_8`  | 25.8.16.34-lts        | LTS     |
 | `V25_3`  | 25.3.14.14-lts        | LTS     |
 
 Any version string can be used — these constants are provided for convenience. Pass the full version from a [ClickHouse release tag](https://github.com/ClickHouse/ClickHouse/releases), e.g. `embeddedclickhouse.ClickHouseVersion("24.8.6.70-lts")`.
