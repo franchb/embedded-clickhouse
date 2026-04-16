@@ -1,6 +1,8 @@
 package embeddedclickhouse
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,4 +36,13 @@ func cachedBinaryPath(cacheDir string, version ClickHouseVersion) string {
 	// Replace path separators in the version string to prevent directory traversal in cache filenames.
 	safeVersion := strings.ReplaceAll(string(version), string(filepath.Separator), "_")
 	return filepath.Join(cacheDir, fmt.Sprintf("clickhouse-%s-%s-%s", safeVersion, runtime.GOOS, runtime.GOARCH))
+}
+
+// customCachedBinaryPath returns the full path to a cached binary for a custom asset.
+// The key is the first 16 hex characters of the SHA256 hash of the input (URL or file content hash).
+func customCachedBinaryPath(cacheDir, hashInput string) string {
+	h := sha256.Sum256([]byte(hashInput))
+	key := hex.EncodeToString(h[:])[:16]
+
+	return filepath.Join(cacheDir, "custom-"+key)
 }

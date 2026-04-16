@@ -61,3 +61,24 @@ func TestCachedBinaryPath(t *testing.T) {
 		t.Errorf("unexpected path: %q", path)
 	}
 }
+
+func TestCustomCachedBinaryPath(t *testing.T) {
+	t.Parallel()
+
+	path := customCachedBinaryPath("/cache", "https://example.com/clickhouse.tar.gz")
+	if !strings.HasPrefix(path, "/cache/custom-") {
+		t.Errorf("unexpected path prefix: %q", path)
+	}
+
+	// Same input produces same key.
+	path2 := customCachedBinaryPath("/cache", "https://example.com/clickhouse.tar.gz")
+	if path != path2 {
+		t.Errorf("same input produced different keys: %q vs %q", path, path2)
+	}
+
+	// Different input produces different key.
+	path3 := customCachedBinaryPath("/cache", "https://example.com/other.tar.gz")
+	if path == path3 {
+		t.Errorf("different inputs produced same key: %q", path)
+	}
+}
