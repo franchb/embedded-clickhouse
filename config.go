@@ -34,6 +34,10 @@ type Config struct {
 	dataPath            string
 	binaryPath          string
 	binaryRepositoryURL string
+	customArchivePath   string
+	customArchiveURL    string
+	sha256              string
+	sha512hash          string
 	startTimeout        time.Duration
 	stopTimeout         time.Duration
 	logger              io.Writer
@@ -91,6 +95,35 @@ func (c Config) BinaryPath(path string) Config {
 // BinaryRepositoryURL sets a custom mirror URL for downloading ClickHouse binaries.
 func (c Config) BinaryRepositoryURL(url string) Config {
 	c.binaryRepositoryURL = url
+	return c
+}
+
+// CustomArchivePath sets a local .tar.gz archive containing a ClickHouse binary.
+// The binary is extracted and cached. This bypasses the standard download logic.
+func (c Config) CustomArchivePath(path string) Config {
+	c.customArchivePath = path
+	return c
+}
+
+// CustomArchiveURL sets a fully custom URL to download a .tar.gz archive containing
+// a ClickHouse binary. The archive is downloaded, extracted, and cached.
+// This bypasses the standard GitHub release download logic entirely.
+func (c Config) CustomArchiveURL(url string) Config {
+	c.customArchiveURL = url
+	return c
+}
+
+// SHA256 sets the expected SHA256 hex digest of the custom archive for verification.
+// Only used with CustomArchivePath or CustomArchiveURL.
+func (c Config) SHA256(hash string) Config {
+	c.sha256 = hash
+	return c
+}
+
+// SHA512 sets the expected SHA512 hex digest of the custom archive for verification.
+// Only used with CustomArchivePath or CustomArchiveURL.
+func (c Config) SHA512(hash string) Config {
+	c.sha512hash = hash
 	return c
 }
 

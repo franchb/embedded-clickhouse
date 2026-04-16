@@ -28,6 +28,9 @@ var ErrStopTimeout = errors.New("embedded-clickhouse: server did not stop within
 // ErrDownloadFailed is returned when the HTTP download of a ClickHouse asset returns a non-200 status.
 var ErrDownloadFailed = errors.New("embedded-clickhouse: download failed")
 
+// ErrSHA256Mismatch is returned when the downloaded file's SHA256 hash does not match the expected value.
+var ErrSHA256Mismatch = errors.New("embedded-clickhouse: SHA256 mismatch")
+
 // ErrSHA512Mismatch is returned when the downloaded file's SHA512 hash does not match the expected value.
 var ErrSHA512Mismatch = errors.New("embedded-clickhouse: SHA512 mismatch")
 

@@ -1,6 +1,7 @@
 package embeddedclickhouse
 
 import (
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
@@ -20,6 +21,7 @@ var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknogloba
 
 // ensureBinary returns the path to a ClickHouse binary, downloading it if necessary.
 func ensureBinary(cfg Config) (string, error) {
+	// Priority: BinaryPath > CustomArchivePath > CustomArchiveURL > standard download.
 	if cfg.binaryPath != "" {
 		if _, err := os.Stat(cfg.binaryPath); err != nil {
 			return "", fmt.Errorf("embedded-clickhouse: specified binary not found: %w", err)
@@ -28,6 +30,106 @@ func ensureBinary(cfg Config) (string, error) {
 		return cfg.binaryPath, nil
 	}
 
+	if cfg.customArchivePath != "" {
+		return ensureCustomArchiveFromPath(cfg)
+	}
+
+	if cfg.customArchiveURL != "" {
+		return ensureCustomArchiveFromURL(cfg)
+	}
+
+	return ensureStandardBinary(cfg)
+}
+
+// ensureCustomArchiveFromPath extracts a ClickHouse binary from a local archive.
+func ensureCustomArchiveFromPath(cfg Config) (string, error) {
+	if _, err := os.Stat(cfg.customArchivePath); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: custom archive not found: %w", err)
+	}
+
+	if err := verifyCustomArchive(cfg.customArchivePath, cfg); err != nil {
+		return "", err
+	}
+
+	// Content-addressed cache key: hash the file content.
+	contentHash, err := fileSHA256(cfg.customArchivePath)
+	if err != nil {
+		return "", err
+	}
+
+	dir, err := cacheDir(cfg.cachePath)
+	if err != nil {
+		return "", err
+	}
+
+	binPath := customCachedBinaryPath(dir, contentHash)
+
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath, nil
+	}
+
+	logf(cfg.logger, "Extracting ClickHouse from custom archive %s...\n", cfg.customArchivePath)
+
+	if err := extractClickHouseBinary(cfg.customArchivePath, binPath); err != nil {
+		return "", err
+	}
+
+	logf(cfg.logger, "Done.\n")
+
+	return binPath, nil
+}
+
+// ensureCustomArchiveFromURL downloads and extracts a ClickHouse binary from a custom URL.
+func ensureCustomArchiveFromURL(cfg Config) (string, error) {
+	dir, err := cacheDir(cfg.cachePath)
+	if err != nil {
+		return "", err
+	}
+
+	// Include configured digests in cache key so hash changes invalidate the cache.
+	cacheInput := cfg.customArchiveURL + "\x00" + strings.ToLower(cfg.sha256) + "\x00" + strings.ToLower(cfg.sha512hash)
+	binPath := customCachedBinaryPath(dir, cacheInput)
+
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath, nil
+	}
+
+	downloadMu.Lock()
+	defer downloadMu.Unlock()
+
+	// Double-check after acquiring lock.
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath, nil
+	}
+
+	logf(cfg.logger, "Downloading ClickHouse from %s...\n", cfg.customArchiveURL)
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
+	}
+
+	archivePath := binPath + ".tar.gz.tmp"
+	defer os.Remove(archivePath)
+
+	if err := downloadFile(cfg.customArchiveURL, archivePath); err != nil {
+		return "", err
+	}
+
+	if err := verifyCustomArchive(archivePath, cfg); err != nil {
+		return "", err
+	}
+
+	if err := extractClickHouseBinary(archivePath, binPath); err != nil {
+		return "", err
+	}
+
+	logf(cfg.logger, "Done.\n")
+
+	return binPath, nil
+}
+
+// ensureStandardBinary handles the standard GitHub release download path.
+func ensureStandardBinary(cfg Config) (string, error) {
 	dir, err := cacheDir(cfg.cachePath)
 	if err != nil {
 		return "", err
@@ -225,6 +327,50 @@ func fileSHA512(path string) (string, error) {
 
 	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("embedded-clickhouse: compute SHA512: %w", err)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyCustomArchive checks the archive against user-provided SHA256 and/or SHA512 hashes.
+// If neither hash is configured, verification is skipped.
+func verifyCustomArchive(archivePath string, cfg Config) error {
+	if cfg.sha256 != "" {
+		actual, err := fileSHA256(archivePath)
+		if err != nil {
+			return err
+		}
+
+		if actual != strings.ToLower(cfg.sha256) {
+			return fmt.Errorf("%w: expected %s, got %s", ErrSHA256Mismatch, cfg.sha256, actual)
+		}
+	}
+
+	if cfg.sha512hash != "" {
+		actual, err := fileSHA512(archivePath)
+		if err != nil {
+			return err
+		}
+
+		if actual != strings.ToLower(cfg.sha512hash) {
+			return fmt.Errorf("%w: expected %s, got %s", ErrSHA512Mismatch, cfg.sha512hash, actual)
+		}
+	}
+
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: open for SHA256: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: compute SHA256: %w", err)
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil

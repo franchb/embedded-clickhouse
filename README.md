@@ -223,6 +223,56 @@ Each node requires 5 ports (TCP, HTTP, interserver HTTP, Keeper client, Keeper R
 
 embedded-clickhouse handles ClickHouse itself. For external dependencies (Kafka, S3, etc.), combine with testcontainers or docker-compose — ClickHouse connects to them via exposed ports.
 
+## Custom builds
+
+If you maintain a custom ClickHouse build (e.g., hosted on a private GitLab registry), you can point embedded-clickhouse at your archive instead of using official GitHub releases.
+
+### From a local archive
+
+```go
+ch := embeddedclickhouse.NewServer(
+    embeddedclickhouse.DefaultConfig().
+        CustomArchivePath("/path/to/clickhouse-custom.tar.gz"),
+)
+```
+
+The archive must be a `.tar.gz` containing a `clickhouse` binary (at any path — `clickhouse`, `bin/clickhouse`, or `usr/bin/clickhouse` all work). The binary is extracted once and cached for reuse.
+
+### From a custom URL
+
+```go
+ch := embeddedclickhouse.NewServer(
+    embeddedclickhouse.DefaultConfig().
+        CustomArchiveURL("https://gitlab.example.com/api/v4/projects/my-project/packages/generic/clickhouse/26.3.3.20.1/clickhouse_26.3.3.20.1_linux_amd64.tar.gz"),
+)
+```
+
+The archive is downloaded, extracted, and cached (keyed by URL). Subsequent runs skip the download.
+
+### Checksum verification
+
+Optionally verify the archive with SHA256 and/or SHA512:
+
+```go
+ch := embeddedclickhouse.NewServer(
+    embeddedclickhouse.DefaultConfig().
+        CustomArchiveURL("https://gitlab.example.com/.../clickhouse.tar.gz").
+        SHA256("abc123...").
+        SHA512("def456..."),
+)
+```
+
+When no hash is provided, verification is skipped for custom assets.
+
+### Priority
+
+When multiple binary sources are configured, the first match wins:
+
+1. `BinaryPath` — pre-extracted binary on disk
+2. `CustomArchivePath` — local archive
+3. `CustomArchiveURL` — remote archive
+4. Standard GitHub release download
+
 ## Configuration reference
 
 All configuration methods use a builder pattern with value receivers, so the original config is never mutated:
@@ -241,6 +291,10 @@ custom := base.Version(embeddedclickhouse.V25_3) // base is unchanged
 | `DataPath(string)`         | Persistent data directory (survives Stop)                |
 | `BinaryPath(string)`       | Use a pre-existing binary, skip download                 |
 | `BinaryRepositoryURL(string)` | Custom mirror URL (default: GitHub releases)          |
+| `CustomArchivePath(string)` | Local `.tar.gz` archive containing a ClickHouse binary  |
+| `CustomArchiveURL(string)` | Remote URL to a `.tar.gz` archive (fully custom URL)     |
+| `SHA256(string)`           | Expected SHA256 hex digest for custom archive verification |
+| `SHA512(string)`           | Expected SHA512 hex digest for custom archive verification |
 | `StartTimeout(time.Duration)` | Max wait for server readiness                         |
 | `StopTimeout(time.Duration)`  | Max wait for graceful shutdown                        |
 | `Logger(io.Writer)`        | Destination for server stdout/stderr                     |

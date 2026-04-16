@@ -100,6 +100,32 @@ func TestConfigBuilderChaining(t *testing.T) {
 	}
 }
 
+func TestConfigBuilderChaining_CustomAssets(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig().
+		CustomArchivePath("/path/to/archive.tar.gz").
+		CustomArchiveURL("https://example.com/clickhouse.tar.gz").
+		SHA256("abc123").
+		SHA512("def456")
+
+	if cfg.customArchivePath != "/path/to/archive.tar.gz" {
+		t.Errorf("customArchivePath = %q, want /path/to/archive.tar.gz", cfg.customArchivePath)
+	}
+
+	if cfg.customArchiveURL != "https://example.com/clickhouse.tar.gz" {
+		t.Errorf("customArchiveURL = %q, want https://example.com/clickhouse.tar.gz", cfg.customArchiveURL)
+	}
+
+	if cfg.sha256 != "abc123" {
+		t.Errorf("sha256 = %q, want abc123", cfg.sha256)
+	}
+
+	if cfg.sha512hash != "def456" {
+		t.Errorf("sha512hash = %q, want def456", cfg.sha512hash)
+	}
+}
+
 func TestConfigBuilderImmutability(t *testing.T) {
 	t.Parallel()
 
