@@ -3,7 +3,7 @@ module github.com/franchb/embedded-clickhouse
 go 1.25
 
 require (
-	github.com/ClickHouse/clickhouse-go/v2 v2.44.0
+	github.com/ClickHouse/clickhouse-go/v2 v2.45.0
 	github.com/stretchr/testify v1.11.1
 )
 
