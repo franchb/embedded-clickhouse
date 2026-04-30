@@ -9,16 +9,17 @@ in-process `sync.Mutex` (`downloadMu` in `download.go`). When `go test ./...`
 runs packages in separate processes, every `TestMain` instantiates its own
 mutex — they do not interlock across processes.
 
-Three temp paths in the download path are deterministic and shared across
-processes:
+Several temp paths in the download/extract path are deterministic and
+shared across processes:
 
 - `archivePath := binPath + ".tar.gz.tmp"` — `ensureCustomArchiveFromURL`
 - `archivePath := filepath.Join(dir, asset.filename + ".tmp")` — standard archive download
-- `tmp := binPath + ".tmp"` — raw binary download
+- `tmp := binPath + ".tmp"` — raw binary download (in `downloadRawBinary`)
+- `tmp := destPath + ".tmp"` — extraction (in `writeExecutable`, reached from every path that extracts a tar.gz, including `ensureCustomArchiveFromPath` for a purely local archive)
 
-When two processes hit the same temp path concurrently, their `os.Create` +
-`io.Copy` calls interleave bytes. SHA verification trips on at least one;
-even if it doesn't, the extracted binary is corrupt. The user-facing failures
+When two processes hit the same temp path concurrently, their `os.Create` /
+`os.OpenFile(O_TRUNC)` + `io.Copy` calls interleave bytes. SHA verification
+trips on at least one; even if it doesn't, the extracted binary is corrupt. The user-facing failures
 in CI:
 
 ```
@@ -35,8 +36,11 @@ another process still has open for write.
 
 - One process downloads; sibling processes wait and reuse the cached binary.
 - The fix is transparent to callers — no public API change.
-- The fix covers all three download paths, not just the `CustomArchiveURL`
-  path mentioned in the issue.
+- The fix covers every code path that writes to a deterministic
+  per-binary temp file, not just the `CustomArchiveURL` path mentioned in
+  the issue. That includes `ensureCustomArchiveFromPath`, which does no
+  network I/O but still extracts to `binPath + ".tmp"` and races the same
+  way under cold cache.
 - Existing in-process behavior is unchanged for single-process callers.
 
 ## Non-goals
@@ -109,14 +113,23 @@ so callers can use `errors.Is`.
 
 #### Modified file: `download.go`
 
-The two call sites that download (and only those — the local `CustomArchivePath`
-path does no download and does not race) gain the file-lock layer:
+All three call sites that may write to `<binPath>.tmp` gain the file-lock
+layer:
 
 - `ensureCustomArchiveFromURL` (currently line ~97)
 - `ensureStandardBinary` (currently line ~144)
+- `ensureCustomArchiveFromPath` (currently line ~45) — has no network I/O
+  but still extracts to `<binPath>.tmp` via `writeExecutable`, racing the
+  same way under cold cache.
+
+`ensureCustomArchiveFromPath` does not currently take `downloadMu`. The
+fix adds the same in-process-mutex + file-lock pair to it for consistency,
+so cold-cache extracts of a local archive are also serialized across
+processes.
 
 The pattern at each site, immediately after the existing `downloadMu.Lock()`
-and the second `os.Stat` double-check:
+(or new lock acquisition for `ensureCustomArchiveFromPath`) and the
+second `os.Stat` double-check:
 
 ```go
 lockPath := binPath + ".lock"
@@ -144,8 +157,10 @@ the same process do not both syscall before one of them blocks.
 #### No changes
 
 - `ensureBinary` precedence logic (`BinaryPath > CustomArchivePath > CustomArchiveURL > standard`) is unchanged.
-- `ensureCustomArchiveFromPath` is unchanged — it does not download.
 - `cache.go` is unchanged.
+- `extract.go` is unchanged. `writeExecutable`'s deterministic
+  `destPath + ".tmp"` is no longer a problem because every caller now
+  holds `<destPath>.lock` for the entire write.
 - Public API (`Config`, `Server`, etc.) is unchanged.
 
 ### Data flow
@@ -239,6 +254,10 @@ Unit tests for `acquireFileLock`:
   - The cached binary's SHA256 matches the SHA256 of the binary inside the
     served archive.
   - The HTTP server records exactly one full archive download (not N).
+- **Cross-process local-archive extract race regression** — same shape as
+  above but for `ensureCustomArchiveFromPath`. N subprocesses point at a
+  shared local tar.gz with a cold shared cache; assert all N return the
+  same binary path with matching SHA256, no panics, no ETXTBSY.
 - **In-process layered-lock test** — N goroutines in one process call
   `ensureCustomArchiveFromURL` against a slow `httptest.NewServer` that
   counts requests. Assert: server saw exactly one full request, all N
