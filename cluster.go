@@ -183,25 +183,7 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.startTimeout)
 	defer cancel()
 
-	readyErrs := make(chan error, len(nodes))
-
-	var wg sync.WaitGroup
-	for i, node := range nodes {
-		wg.Add(1)
-
-		go func(i int, port uint32) {
-			defer wg.Done()
-
-			if err := waitForReady(ctx, port); err != nil {
-				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
-			}
-		}(i, node.httpPort)
-	}
-
-	wg.Wait()
-	close(readyErrs)
-
-	if err, ok := <-readyErrs; ok {
+	if err := waitForAllNodesReady(ctx, nodes); err != nil {
 		return err
 	}
 
@@ -323,6 +305,34 @@ func allocateClusterNodePorts() (clusterNodePorts, error) {
 		Keeper:      keeper,
 		KeeperRaft:  keeperRaft,
 	}, nil
+}
+
+// waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.
+// Returns the first error reported by any node, or nil if all are ready.
+func waitForAllNodesReady(ctx context.Context, nodes []*EmbeddedClickHouse) error {
+	readyErrs := make(chan error, len(nodes))
+
+	var wg sync.WaitGroup
+	for i, node := range nodes {
+		wg.Add(1)
+
+		go func(i int, port uint32) {
+			defer wg.Done()
+
+			if err := waitForReady(ctx, port); err != nil {
+				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
+			}
+		}(i, node.httpPort)
+	}
+
+	wg.Wait()
+	close(readyErrs)
+
+	if err, ok := <-readyErrs; ok {
+		return err
+	}
+
+	return nil
 }
 
 // waitForKeeperQuorum polls system.zookeeper via the HTTP interface until it succeeds

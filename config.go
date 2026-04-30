@@ -132,6 +132,7 @@ func (c Config) SHA512(hash string) Config {
 func (c Config) StartTimeout(d time.Duration) Config {
 	c.startTimeout = d
 	c.startTimeoutSet = true
+
 	return c
 }
 
