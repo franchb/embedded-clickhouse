@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultClusterStartTimeout = 180 * time.Second
+	defaultClusterStartTimeout = 240 * time.Second
 	keeperQuorumPollInterval   = 500 * time.Millisecond
 	minReplicas                = 2
 )
@@ -47,7 +47,7 @@ type Cluster struct {
 }
 
 // NewCluster creates a new Cluster with the given number of replicas.
-// If no config is provided, DefaultConfig() is used with a 120s start timeout.
+// If StartTimeout is not explicitly set on the config, defaultClusterStartTimeout is used.
 func NewCluster(replicas int, config ...Config) *Cluster {
 	var cfg Config
 	if len(config) > 0 {
@@ -56,7 +56,7 @@ func NewCluster(replicas int, config ...Config) *Cluster {
 		cfg = DefaultConfig()
 	}
 
-	if cfg.startTimeout < defaultClusterStartTimeout {
+	if !cfg.startTimeoutSet {
 		cfg.startTimeout = defaultClusterStartTimeout
 	}
 
@@ -183,10 +183,8 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.startTimeout)
 	defer cancel()
 
-	for i, node := range nodes {
-		if err := waitForReady(ctx, node.httpPort); err != nil {
-			return fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
-		}
+	if err := waitForAllNodesReady(ctx, nodes); err != nil {
+		return err
 	}
 
 	// Wait for Keeper quorum.
@@ -307,6 +305,34 @@ func allocateClusterNodePorts() (clusterNodePorts, error) {
 		Keeper:      keeper,
 		KeeperRaft:  keeperRaft,
 	}, nil
+}
+
+// waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.
+// Returns the first error reported by any node, or nil if all are ready.
+func waitForAllNodesReady(ctx context.Context, nodes []*EmbeddedClickHouse) error {
+	readyErrs := make(chan error, len(nodes))
+
+	var wg sync.WaitGroup
+	for i, node := range nodes {
+		wg.Add(1)
+
+		go func(i int, port uint32) {
+			defer wg.Done()
+
+			if err := waitForReady(ctx, port); err != nil {
+				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
+			}
+		}(i, node.httpPort)
+	}
+
+	wg.Wait()
+	close(readyErrs)
+
+	if err, ok := <-readyErrs; ok {
+		return err
+	}
+
+	return nil
 }
 
 // waitForKeeperQuorum polls system.zookeeper via the HTTP interface until it succeeds

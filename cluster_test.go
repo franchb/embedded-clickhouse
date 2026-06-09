@@ -34,12 +34,12 @@ func TestNewCluster_CustomConfig(t *testing.T) {
 	assert.Equal(t, 180*time.Second, cl.config.startTimeout)
 }
 
-func TestNewCluster_BumpsStartTimeout(t *testing.T) {
+func TestNewCluster_HonorsExplicitShortTimeout(t *testing.T) {
 	t.Parallel()
 
 	cfg := DefaultConfig().StartTimeout(10 * time.Second)
 	cl := NewCluster(3, cfg)
-	assert.Equal(t, defaultClusterStartTimeout, cl.config.startTimeout)
+	assert.Equal(t, 10*time.Second, cl.config.startTimeout)
 }
 
 func TestCluster_StopBeforeStart(t *testing.T) {

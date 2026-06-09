@@ -39,6 +39,7 @@ type Config struct {
 	sha256              string
 	sha512hash          string
 	startTimeout        time.Duration
+	startTimeoutSet     bool
 	stopTimeout         time.Duration
 	logger              io.Writer
 	settings            map[string]string
@@ -130,6 +131,8 @@ func (c Config) SHA512(hash string) Config {
 // StartTimeout sets the maximum time to wait for the server to become ready.
 func (c Config) StartTimeout(d time.Duration) Config {
 	c.startTimeout = d
+	c.startTimeoutSet = true
+
 	return c
 }
 
