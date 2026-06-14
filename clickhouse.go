@@ -58,6 +58,9 @@ var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cl
 // ErrServerExited is returned when the ClickHouse process exits during startup before becoming ready.
 var ErrServerExited = errors.New("embedded-clickhouse: server process exited during startup")
 
+// ErrLockingUnsupported is returned when cross-process file locking is not supported on the current platform.
+var ErrLockingUnsupported = errors.New("embedded-clickhouse: file locking not supported on this platform")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
