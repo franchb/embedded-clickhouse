@@ -37,6 +37,10 @@ var ErrSHA512Mismatch = errors.New("embedded-clickhouse: SHA512 mismatch")
 // ErrSHA512NotFound is returned when the SHA512 checksum file does not contain a hash for the expected filename.
 var ErrSHA512NotFound = errors.New("embedded-clickhouse: SHA512 hash not found")
 
+// ErrSHA512Unavailable is returned when the SHA512 checksum file cannot be fetched (non-200)
+// and AllowMissingChecksum has not been enabled.
+var ErrSHA512Unavailable = errors.New("embedded-clickhouse: SHA512 checksum unavailable")
+
 // ErrBinaryNotFound is returned when the ClickHouse binary cannot be located inside a downloaded archive.
 var ErrBinaryNotFound = errors.New("embedded-clickhouse: binary not found in archive")
 
