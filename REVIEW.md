@@ -4,8 +4,10 @@
 
 **Method:** 9 independent finder angles (5 correctness, 3 cleanup, 1 altitude) → 68 raw
 candidates → deduped to 24 → one verifier per candidate → fresh-eyes sweep (+8) → 4
-strongest sweep candidates verified. **All 27 verified findings were CONFIRMED or
-PLAUSIBLE; zero REFUTED.** Several were verified empirically (cross-compile, `go run`).
+strongest sweep candidates verified and folded into the list below. **All 24 numbered
+findings below were CONFIRMED or PLAUSIBLE; zero REFUTED** (several verified empirically
+via cross-compile and `go run`). The 4 lower-confidence extras were surfaced but not
+individually verified.
 
 Each item below is self-contained: mechanism, trigger, and suggested fix. Check off as
 resolved. Line numbers are valid at commit `dba7511`.
@@ -39,7 +41,7 @@ resolved. Line numbers are valid at commit `dba7511`.
 
 ### [ ] 5. Credential leak: full `customArchiveURL` in logs and error chains
 **Where:** `download.go:105` (`logf(... "Downloading ClickHouse from %s", cfg.customArchiveURL)`; default logger is `os.Stdout`, `config.go:54`), `download.go:240,245` (URL baked into wrapped errors)
-**Bug:** The documented private-GitLab use case (README:228, `gitlab_integration_test.go`) can only authenticate via URL-embedded credentials (`oauth2:glpat-…@` or `?private_token=…`) since `downloadFile` uses bare `httpClient.Get`. The token lands in CI logs on every cold start and in `tb.Fatal` output on any failure. No redaction exists.
+**Bug:** The documented private-GitLab `CustomArchiveURL` use case (README:228,246; `gitlab_integration_test.go`) offers no auth-header option — `downloadFile` uses a bare `httpClient.Get`, so any credentials must ride in the URL (`oauth2:glpat-…@` or `?private_token=…`). Such tokens land in CI logs on every cold start and in `tb.Fatal` output on any failure. No redaction exists.
 **Fix:** log/wrap `u.Redacted()` (and strip query params or redact known token params); longer-term, add an auth-header option so credentials don't ride in the URL.
 
 ### [ ] 6. Cluster ignores `DataPath`/`TCPPort`/`HTTPPort` and deletes "persistent" data
@@ -78,7 +80,7 @@ resolved. Line numbers are valid at commit `dba7511`.
 
 ### [ ] 12. Unbounded decompression and download size (gzip bomb / disk fill)
 **Where:** `extract.go:86` (`io.Copy` of tar entry; `hdr.Size` never checked), `download.go:253` (`io.Copy` of response body, no cap)
-**Bug:** A compromised mirror or attacker-controlled `CustomArchiveURL` (verification optional/fail-open, items 4) can fill the disk hosting the cache (typically `$HOME`), wedging CI.
+**Bug:** A compromised mirror or attacker-controlled `CustomArchiveURL` (verification optional/fail-open, item 4) can fill the disk hosting the cache (typically `$HOME`), wedging CI.
 **Fix:** `io.LimitReader` with a sane ceiling (e.g. 4 GiB decompressed, configurable) on both paths; reject `hdr.Size` above the cap up front.
 
 ---
