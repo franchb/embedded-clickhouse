@@ -12,12 +12,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+// testRawBinaryName is a stand-in raw-binary asset filename used across download tests.
+const testRawBinaryName = "clickhouse-macos"
+
+// testArchiveFilename is a stand-in archive filename used across the SHA512 parse tests.
+const testArchiveFilename = "myfile.tgz"
 
 func TestDownloadFile(t *testing.T) {
 	t.Parallel()
@@ -62,6 +69,146 @@ func TestDownloadFile_HTTPError(t *testing.T) {
 	}
 }
 
+func TestRedactURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		raw           string
+		mustNotHave   []string // substrings that must be absent from the result
+		want          string   // exact expected result (empty = skip exact check)
+		wantUnchanged bool     // result must equal raw
+	}{
+		{
+			name:        "userinfo password",
+			raw:         "https://oauth2:glpat-SECRET@gitlab.example.com/clickhouse.tar.gz",
+			mustNotHave: []string{"glpat-SECRET"},
+		},
+		{
+			name:        "private_token query param",
+			raw:         "https://gitlab.example.com/clickhouse.tar.gz?private_token=SECRET2",
+			mustNotHave: []string{"SECRET2"},
+		},
+		{
+			name:        "both userinfo and query",
+			raw:         "https://oauth2:glpat-SECRET@gitlab.example.com/clickhouse.tar.gz?private_token=SECRET2",
+			mustNotHave: []string{"glpat-SECRET", "SECRET2"},
+		},
+		{
+			// Semicolon separators make url.ParseQuery fail; redactURL must fail
+			// closed (replace the whole query) rather than echo it verbatim.
+			name:        "unparseable query fails closed",
+			raw:         "https://gitlab.example.com/clickhouse.tar.gz?private_token=SECRET3;foo=bar",
+			mustNotHave: []string{"SECRET3"},
+		},
+		{
+			name:          "clean url unchanged",
+			raw:           "https://github.com/ClickHouse/ClickHouse/releases/download/v26.3/clickhouse.tgz",
+			wantUnchanged: true,
+		},
+		{
+			name: "unparseable",
+			raw:  "://not a url at all\x7f",
+			want: "[redacted url]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := redactURL(tt.raw)
+
+			for _, secret := range tt.mustNotHave {
+				if strings.Contains(got, secret) {
+					t.Errorf("redacted URL %q still contains secret %q", got, secret)
+				}
+			}
+
+			if tt.wantUnchanged && got != tt.raw {
+				t.Errorf("clean URL was altered: got %q, want %q", got, tt.raw)
+			}
+
+			if tt.want != "" && got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDownloadFile_HTTPError_RedactsCredentials(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	// Splice credentials into both userinfo and query of the request URL.
+	parsed, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	credURL := parsed.Scheme + "://oauth2:glpat-SECRET@" + parsed.Host + "/clickhouse.tar.gz?private_token=SECRET2"
+
+	dest := filepath.Join(t.TempDir(), "downloaded")
+
+	err = downloadFile(credURL, dest)
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+
+	if !errors.Is(err, ErrDownloadFailed) {
+		t.Fatalf("expected ErrDownloadFailed, got: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "glpat-SECRET") {
+		t.Errorf("error leaked userinfo credential: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "SECRET2") {
+		t.Errorf("error leaked query credential: %v", err)
+	}
+}
+
+// TestDownloadFile_TransportError_RedactsCredentials covers the transport-error
+// branch (not the HTTP-status branch): the returned *url.Error would otherwise
+// re-embed the credentialed URL through %w.
+func TestDownloadFile_TransportError_RedactsCredentials(t *testing.T) {
+	t.Parallel()
+
+	// 127.0.0.1:1 is never bound, so the dial is refused immediately.
+	credURL := "http://oauth2:glpat-SECRET@127.0.0.1:1/clickhouse.tar.gz?private_token=SECRET2"
+
+	err := downloadFile(credURL, filepath.Join(t.TempDir(), "downloaded"))
+	if err == nil {
+		t.Fatal("expected a transport error dialing a dead port")
+	}
+
+	if strings.Contains(err.Error(), "glpat-SECRET") || strings.Contains(err.Error(), "SECRET2") {
+		t.Errorf("transport error leaked credentials: %v", err)
+	}
+}
+
+// TestVerifySHA512_TransportError_RedactsCredentials covers the checksum-fetch
+// transport-error branch, which derives its URL from binaryRepositoryURL and so
+// can carry the same credentials.
+func TestVerifySHA512_TransportError_RedactsCredentials(t *testing.T) {
+	t.Parallel()
+
+	credURL := "http://oauth2:glpat-SECRET@127.0.0.1:1/clickhouse.tar.gz.sha512?private_token=SECRET2"
+
+	err := verifySHA512(filepath.Join(t.TempDir(), "file"), credURL, "clickhouse.tar.gz", false, io.Discard)
+	if err == nil {
+		t.Fatal("expected a transport error dialing a dead port")
+	}
+
+	if strings.Contains(err.Error(), "glpat-SECRET") || strings.Contains(err.Error(), "SECRET2") {
+		t.Errorf("transport error leaked credentials: %v", err)
+	}
+}
+
 func TestParseSHA512(t *testing.T) {
 	t.Parallel()
 
@@ -75,19 +222,44 @@ func TestParseSHA512(t *testing.T) {
 		{
 			name:     "standard format",
 			content:  "abc123def456  myfile.tgz\n",
-			filename: "myfile.tgz",
+			filename: testArchiveFilename,
 			want:     "abc123def456",
 		},
 		{
-			name:     "single hash line (128 chars)",
+			name:     "single bare hash line (128 hex chars)",
 			content:  "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483\n",
 			filename: "clickhouse-common-static-25.3.3.42-amd64.tgz",
+			want:     "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483",
+		},
+		{
+			name:     "GNU binary marker (*file)",
+			content:  "abc123def456 *myfile.tgz\n",
+			filename: testArchiveFilename,
+			want:     "abc123def456",
+		},
+		{
+			name:     "dot-slash prefix (./file)",
+			content:  "abc123def456  ./myfile.tgz\n",
+			filename: testArchiveFilename,
+			want:     "abc123def456",
+		},
+		{
+			name:     "single bare non-hex token",
+			content:  "not-a-valid-hash\n",
+			filename: testArchiveFilename,
+			wantErr:  true,
+		},
+		{
+			name: "ambiguous two bare hashes",
+			content: "a66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483\n" +
+				"b66ab5824e9d826188a467170e7b24b031a21f936c4c5aa73e49d4c3a01dc13627523395699cea3c1d4395db391c1f8047eace1b9a28fcac4aa0eac7a5707483\n",
+			filename: testArchiveFilename,
 			wantErr:  true,
 		},
 		{
 			name:     "filename not found",
 			content:  "abc123  otherfile.tgz\n",
-			filename: "myfile.tgz",
+			filename: testArchiveFilename,
 			wantErr:  true,
 		},
 	}
@@ -131,7 +303,7 @@ func TestVerifySHA512(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz", nil)
+	err := verifySHA512(filePath, ts.URL, "testfile.tgz", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +325,7 @@ func TestVerifySHA512_Mismatch(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz", nil)
+	err := verifySHA512(filePath, ts.URL, "testfile.tgz", false, nil)
 	if err == nil {
 		t.Fatal("expected SHA512 mismatch error")
 	}
@@ -248,7 +420,7 @@ func TestDownloadRawBinary_WithVerification(t *testing.T) {
 	binaryContent := []byte("fake clickhouse binary")
 	h := sha512.Sum512(binaryContent)
 	expectedHash := hex.EncodeToString(h[:])
-	filename := assetMacOS
+	filename := testRawBinaryName
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha512") {
@@ -278,11 +450,16 @@ func TestDownloadRawBinary_WithVerification(t *testing.T) {
 	}
 }
 
-func TestDownloadRawBinary_SHA512Unavailable(t *testing.T) {
+// TestDownloadRawBinary_SHA512Unavailable_SkippedByDefault documents that raw
+// binaries (macOS) tolerate a missing .sha512 by default: ClickHouse publishes no
+// checksum for the macOS raw binaries, so failing closed there would break Start()
+// out of the box. Archives, which always ship a checksum, stay strict — see
+// TestDownloadAndExtract_SHA512Unavailable_StrictFails.
+func TestDownloadRawBinary_SHA512Unavailable_SkippedByDefault(t *testing.T) {
 	t.Parallel()
 
 	binaryContent := []byte("fake binary no sha512")
-	filename := assetMacOS
+	filename := testRawBinaryName
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha512") {
@@ -296,10 +473,93 @@ func TestDownloadRawBinary_SHA512Unavailable(t *testing.T) {
 	tmpDir := t.TempDir()
 	binPath := filepath.Join(tmpDir, filename)
 	asset := platformAsset{filename: filename, assetType: assetRawBinary}
-	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir)
+
+	// Default config (no AllowMissingChecksum): the raw-binary path still proceeds.
+	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir).Logger(io.Discard)
+
+	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+		t.Fatalf("raw binary with no upstream checksum should succeed by default, got: %v", err)
+	}
+
+	got, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(got, binaryContent) {
+		t.Errorf("binary content mismatch")
+	}
+}
+
+func TestDownloadRawBinary_SHA512Unavailable_AllowMissing(t *testing.T) {
+	t.Parallel()
+
+	binaryContent := []byte("fake binary no sha512")
+	filename := testRawBinaryName
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha512") {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.Write(binaryContent)
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, filename)
+	asset := platformAsset{filename: filename, assetType: assetRawBinary}
+
+	// Opt-in: tolerate the missing checksum and write the binary.
+	cfg := DefaultConfig().
+		BinaryRepositoryURL(ts.URL).
+		CachePath(tmpDir).
+		AllowMissingChecksum(true).
+		Logger(io.Discard)
 
 	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
 		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(got, binaryContent) {
+		t.Errorf("binary content mismatch")
+	}
+}
+
+// TestDownloadAndExtract_SHA512Unavailable_StrictFails verifies the security
+// improvement for the archive (Linux) path: a missing .sha512 fails closed by
+// default — archives always ship a checksum upstream, so a 404 is suspicious —
+// and no binary is cached.
+func TestDownloadAndExtract_SHA512Unavailable_StrictFails(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha512") {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			// Verification fails before extraction, so any archive body works.
+			fmt.Fprint(w, "not really a tgz")
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	asset := platformAsset{filename: "clickhouse-common-static-x.tgz", assetType: assetArchive}
+	binPath := filepath.Join(tmpDir, "clickhouse")
+	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir).Logger(io.Discard)
+
+	err := downloadAndExtract(cfg, ts.URL+"/"+asset.filename, asset, binPath)
+	if !errors.Is(err, ErrSHA512Unavailable) {
+		t.Fatalf("expected ErrSHA512Unavailable for an archive with no checksum, got: %v", err)
+	}
+
+	if _, statErr := os.Stat(binPath); !os.IsNotExist(statErr) {
+		t.Errorf("binary should not be written on strict failure; stat err = %v", statErr)
 	}
 }
 

@@ -27,22 +27,23 @@ const DefaultVersion = V26_3
 
 // Config holds configuration for an embedded ClickHouse server.
 type Config struct {
-	version             ClickHouseVersion
-	tcpPort             uint32
-	httpPort            uint32
-	cachePath           string
-	dataPath            string
-	binaryPath          string
-	binaryRepositoryURL string
-	customArchivePath   string
-	customArchiveURL    string
-	sha256              string
-	sha512hash          string
-	startTimeout        time.Duration
-	startTimeoutSet     bool
-	stopTimeout         time.Duration
-	logger              io.Writer
-	settings            map[string]string
+	version              ClickHouseVersion
+	tcpPort              uint32
+	httpPort             uint32
+	cachePath            string
+	dataPath             string
+	binaryPath           string
+	binaryRepositoryURL  string
+	customArchivePath    string
+	customArchiveURL     string
+	sha256               string
+	sha512hash           string
+	allowMissingChecksum bool
+	startTimeout         time.Duration
+	startTimeoutSet      bool
+	stopTimeout          time.Duration
+	logger               io.Writer
+	settings             map[string]string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -129,6 +130,18 @@ func (c Config) SHA256(hash string) Config {
 // Only used with CustomArchivePath or CustomArchiveURL.
 func (c Config) SHA512(hash string) Config {
 	c.sha512hash = hash
+	return c
+}
+
+// AllowMissingChecksum controls whether a missing (non-200) SHA512 checksum file is
+// tolerated for archive downloads (the Linux .tgz path). The default (false) is strict:
+// a missing checksum fails the download with ErrSHA512Unavailable. Set to true for an
+// air-gapped or internal mirror that serves archives without a .sha512.
+//
+// This does not affect raw-binary downloads (the macOS path): ClickHouse publishes no
+// checksum for those, so a missing one is always tolerated regardless of this setting.
+func (c Config) AllowMissingChecksum(allow bool) Config {
+	c.allowMissingChecksum = allow
 	return c
 }
 
