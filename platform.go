@@ -8,6 +8,14 @@ import (
 
 const defaultBaseURL = "https://github.com/ClickHouse/ClickHouse/releases/download"
 
+const (
+	archAMD64 = "amd64"
+	archARM64 = "arm64"
+
+	assetMacOS        = "clickhouse-macos"
+	assetMacOSAARCH64 = "clickhouse-macos-aarch64"
+)
+
 type assetType int
 
 const (
@@ -65,10 +73,10 @@ func resolveAsset(version ClickHouseVersion, goos, goarch string) (platformAsset
 
 func linuxArch(goarch string) (string, error) {
 	switch goarch {
-	case "amd64":
-		return "amd64", nil
-	case "arm64":
-		return "arm64", nil
+	case archAMD64:
+		return archAMD64, nil
+	case archARM64:
+		return archARM64, nil
 	default:
 		return "", fmt.Errorf("%w: linux/%s", ErrUnsupportedPlatform, goarch)
 	}
@@ -76,10 +84,10 @@ func linuxArch(goarch string) (string, error) {
 
 func darwinAssetName(goarch string) (string, error) {
 	switch goarch {
-	case "amd64":
-		return "clickhouse-macos", nil
-	case "arm64":
-		return "clickhouse-macos-aarch64", nil
+	case archAMD64:
+		return assetMacOS, nil
+	case archARM64:
+		return assetMacOSAARCH64, nil
 	default:
 		return "", fmt.Errorf("%w: darwin/%s", ErrUnsupportedPlatform, goarch)
 	}
