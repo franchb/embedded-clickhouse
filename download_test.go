@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -299,6 +300,108 @@ func TestDownloadRawBinary_SHA512Unavailable(t *testing.T) {
 
 	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestEnsureStandardBinary_ConcurrentSameProcess verifies that many goroutines sharing
+// one cache directory converge on the same binary without corrupting it. The advisory
+// file lock serializes the download/extract; the fast-path stat hits for the rest.
+func TestEnsureStandardBinary_ConcurrentSameProcess(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+
+	cfg := DefaultConfig().CachePath(cacheDir).Logger(io.Discard)
+
+	asset, err := resolveCurrentPlatformAsset(cfg.version)
+	if err != nil {
+		t.Skipf("platform has no standard asset: %v", err)
+	}
+
+	if asset.assetType != assetArchive {
+		t.Skipf("standard asset for this platform is not an archive (type %d); concurrent archive path not exercised", asset.assetType)
+	}
+
+	// Build an archive whose contents match what the server will serve, and compute
+	// its SHA512 so the .sha512 endpoint validates.
+	archivePath := createTestArchive(t, t.TempDir())
+
+	archiveContent, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := sha512.Sum512(archiveContent)
+	expectedHash := hex.EncodeToString(h[:])
+
+	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha512") {
+			fmt.Fprintf(rw, "%s  %s\n", expectedHash, asset.filename)
+			return
+		}
+
+		rw.Write(archiveContent)
+	}))
+	defer ts.Close()
+
+	cfg = cfg.BinaryRepositoryURL(ts.URL)
+
+	const goroutines = 8
+
+	var wg sync.WaitGroup
+
+	start := make(chan struct{})
+
+	paths := make([]string, goroutines)
+	errs := make([]error, goroutines)
+
+	for i := range goroutines {
+		wg.Add(1)
+
+		go func(idx int) {
+			defer wg.Done()
+
+			<-start
+
+			paths[idx], errs[idx] = ensureBinary(cfg)
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	want := cachedBinaryPath(cacheDir, cfg.version)
+
+	for i := range goroutines {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: ensureBinary failed: %v", i, errs[i])
+		}
+
+		if paths[i] != want {
+			t.Errorf("goroutine %d: binPath = %q, want %q", i, paths[i], want)
+		}
+	}
+
+	// Final binary exists and is executable.
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Mode()&0o111 == 0 {
+		t.Error("cached binary is not executable")
+	}
+
+	// No stray "*.tmp" orphans should remain (the ".lock" sidecar is expected).
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("stray temp file remained: %s", e.Name())
+		}
 	}
 }
 

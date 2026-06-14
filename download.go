@@ -10,11 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
-
-var downloadMu sync.Mutex //nolint:gochecknoglobals // serializes concurrent binary downloads
 
 // httpClient is a shared HTTP client with a timeout to prevent indefinite hangs on slow CDNs.
 var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknoglobals
@@ -64,6 +61,23 @@ func ensureCustomArchiveFromPath(cfg Config) (string, error) {
 
 	binPath := customCachedBinaryPath(dir, contentHash)
 
+	// Lock-free fast path.
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath, nil
+	}
+
+	// The lock file lives in dir, so the directory must exist before locking.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
+	}
+
+	lock, err := acquireLock(lockPathFor(binPath))
+	if err != nil {
+		return "", err
+	}
+	defer lock.release() //nolint:errcheck
+
+	// Re-stat under the lock: another process/goroutine may have extracted it.
 	if _, err := os.Stat(binPath); err == nil {
 		return binPath, nil
 	}
@@ -90,25 +104,37 @@ func ensureCustomArchiveFromURL(cfg Config) (string, error) {
 	cacheInput := cfg.customArchiveURL + "\x00" + strings.ToLower(cfg.sha256) + "\x00" + strings.ToLower(cfg.sha512hash)
 	binPath := customCachedBinaryPath(dir, cacheInput)
 
+	// Lock-free fast path.
 	if _, err := os.Stat(binPath); err == nil {
 		return binPath, nil
 	}
 
-	downloadMu.Lock()
-	defer downloadMu.Unlock()
+	// The lock file lives in dir, so the directory must exist before locking.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
+	}
 
-	// Double-check after acquiring lock.
+	lock, err := acquireLock(lockPathFor(binPath))
+	if err != nil {
+		return "", err
+	}
+	defer lock.release() //nolint:errcheck
+
+	// Re-stat under the lock: another process/goroutine may have downloaded it.
 	if _, err := os.Stat(binPath); err == nil {
 		return binPath, nil
 	}
 
 	logf(cfg.logger, "Downloading ClickHouse from %s...\n", cfg.customArchiveURL)
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
+	archiveFile, err := os.CreateTemp(dir, filepath.Base(binPath)+".tar.gz.*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: create temp file: %w", err)
 	}
 
-	archivePath := binPath + ".tar.gz.tmp"
+	archivePath := archiveFile.Name()
+	archiveFile.Close()
+
 	defer os.Remove(archivePath)
 
 	if err := downloadFile(cfg.customArchiveURL, archivePath); err != nil {
@@ -137,14 +163,23 @@ func ensureStandardBinary(cfg Config) (string, error) {
 
 	binPath := cachedBinaryPath(dir, cfg.version)
 
+	// Lock-free fast path.
 	if _, err := os.Stat(binPath); err == nil {
 		return binPath, nil
 	}
 
-	downloadMu.Lock()
-	defer downloadMu.Unlock()
+	// The lock file lives in dir, so the directory must exist before locking.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
+	}
 
-	// Double-check after acquiring lock.
+	lock, err := acquireLock(lockPathFor(binPath))
+	if err != nil {
+		return "", err
+	}
+	defer lock.release() //nolint:errcheck
+
+	// Re-stat under the lock: another process/goroutine may have downloaded it.
 	if _, err := os.Stat(binPath); err == nil {
 		return binPath, nil
 	}
@@ -186,7 +221,14 @@ func downloadAndExtract(cfg Config, url string, asset platformAsset, binPath str
 		return fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
 	}
 
-	archivePath := filepath.Join(dir, asset.filename+".tmp")
+	archiveFile, err := os.CreateTemp(dir, asset.filename+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("embedded-clickhouse: create temp file: %w", err)
+	}
+
+	archivePath := archiveFile.Name()
+	archiveFile.Close()
+
 	defer os.Remove(archivePath)
 
 	if err := downloadFile(url, archivePath); err != nil {
@@ -208,7 +250,15 @@ func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) err
 		return fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
 	}
 
-	tmp := binPath + ".tmp"
+	tmpFile, err := os.CreateTemp(filepath.Dir(binPath), filepath.Base(binPath)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("embedded-clickhouse: create temp file: %w", err)
+	}
+
+	tmp := tmpFile.Name()
+	tmpFile.Close()
+
+	defer os.Remove(tmp)
 
 	if err := downloadFile(url, tmp); err != nil {
 		return err
@@ -217,17 +267,14 @@ func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) err
 	sha512url := sha512URL(cfg.binaryRepositoryURL, cfg.version, asset)
 
 	if err := verifySHA512(tmp, sha512url, asset.filename, cfg.logger); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 
 	if err := os.Chmod(tmp, 0o755); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("embedded-clickhouse: chmod binary: %w", err)
 	}
 
 	if err := os.Rename(tmp, binPath); err != nil {
-		os.Remove(tmp)
 		return fmt.Errorf("embedded-clickhouse: rename binary: %w", err)
 	}
 

@@ -56,6 +56,9 @@ var ErrInvalidSettingKey = errors.New("embedded-clickhouse: invalid setting key"
 // ErrClusterManaged is returned when Start or Stop is called on a node owned by a Cluster.
 var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cluster; use Cluster.Start/Stop")
 
+// ErrLockingUnsupported is returned when cross-process file locking is not supported on the current platform.
+var ErrLockingUnsupported = errors.New("embedded-clickhouse: file locking not supported on this platform")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
