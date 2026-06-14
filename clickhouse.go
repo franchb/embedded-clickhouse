@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"sync"
 	"testing"
@@ -56,13 +55,16 @@ var ErrInvalidSettingKey = errors.New("embedded-clickhouse: invalid setting key"
 // ErrClusterManaged is returned when Start or Stop is called on a node owned by a Cluster.
 var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cluster; use Cluster.Start/Stop")
 
+// ErrServerExited is returned when the ClickHouse process exits during startup before becoming ready.
+var ErrServerExited = errors.New("embedded-clickhouse: server process exited during startup")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
 
 	mu      sync.RWMutex
 	started bool
-	cmd     *exec.Cmd
+	proc    *process
 	tmpDir  string
 
 	tcpPort         uint32
@@ -186,24 +188,24 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 		logger = os.Stdout
 	}
 
-	cmd, err := startProcess(binPath, configPath, logger)
+	proc, err := startProcess(binPath, configPath, logger)
 	if err != nil {
 		return err
 	}
 
 	cleanups = append(cleanups, func() {
-		stopProcess(cmd, e.config.stopTimeout) //nolint:errcheck
+		stopProcess(proc, e.config.stopTimeout) //nolint:errcheck
 	})
 
-	// Wait for server to be ready.
+	// Wait for server to be ready, or abort early if the process exits.
 	ctx, cancel := context.WithTimeout(context.Background(), e.config.startTimeout)
 	defer cancel()
 
-	if err := waitForReady(ctx, httpPort); err != nil {
+	if err := waitForReadyOrExit(ctx, httpPort, proc); err != nil {
 		return err
 	}
 
-	e.cmd = cmd
+	e.proc = proc
 	e.tmpDir = tmpDir
 	e.tcpPort = tcpPort
 	e.httpPort = httpPort
@@ -228,7 +230,7 @@ func (e *EmbeddedClickHouse) Stop() error {
 
 	var errs []error
 
-	if err := stopProcess(e.cmd, e.config.stopTimeout); err != nil {
+	if err := stopProcess(e.proc, e.config.stopTimeout); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -240,7 +242,7 @@ func (e *EmbeddedClickHouse) Stop() error {
 	}
 
 	e.started = false
-	e.cmd = nil
+	e.proc = nil
 	e.tcpPort = 0
 	e.httpPort = 0
 
