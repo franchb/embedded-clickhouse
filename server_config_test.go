@@ -72,7 +72,7 @@ func TestWriteServerConfig_OverrideMaxMemory(t *testing.T) {
 
 	dir := t.TempDir()
 	override := "2147483648" // 2 GiB
-	settings := map[string]string{"max_server_memory_usage": override}
+	settings := map[string]string{testKeyMaxServerMemoryUsage: override}
 
 	configPath, err := writeServerConfig(dir, 19000, 18123, settings)
 	if err != nil {
@@ -111,9 +111,9 @@ func TestMergeSettings(t *testing.T) {
 	t.Run("user values pass through", func(t *testing.T) {
 		t.Parallel()
 
-		got := mergeSettings(map[string]string{"max_server_memory_usage": "999"})
-		if got["max_server_memory_usage"] != "999" {
-			t.Errorf("expected value 999, got %q", got["max_server_memory_usage"])
+		got := mergeSettings(map[string]string{testKeyMaxServerMemoryUsage: "999"})
+		if got[testKeyMaxServerMemoryUsage] != "999" {
+			t.Errorf("expected value 999, got %q", got[testKeyMaxServerMemoryUsage])
 		}
 	})
 

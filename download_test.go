@@ -247,7 +247,7 @@ func TestDownloadRawBinary_WithVerification(t *testing.T) {
 	binaryContent := []byte("fake clickhouse binary")
 	h := sha512.Sum512(binaryContent)
 	expectedHash := hex.EncodeToString(h[:])
-	filename := "clickhouse-macos"
+	filename := assetMacOS
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha512") {
@@ -281,7 +281,7 @@ func TestDownloadRawBinary_SHA512Unavailable(t *testing.T) {
 	t.Parallel()
 
 	binaryContent := []byte("fake binary no sha512")
-	filename := "clickhouse-macos"
+	filename := assetMacOS
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha512") {

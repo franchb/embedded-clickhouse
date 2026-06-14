@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -101,8 +102,8 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 
 	cleanups := make([]func(), 0)
 	cleanup := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, cleanup := range slices.Backward(cleanups) {
+			cleanup()
 		}
 	}
 
@@ -211,9 +212,7 @@ func (c *Cluster) Stop() error {
 	var errs []error
 
 	// Stop in reverse order.
-	for i := len(c.nodes) - 1; i >= 0; i-- {
-		node := c.nodes[i]
-
+	for i, node := range slices.Backward(c.nodes) {
 		node.mu.Lock()
 
 		if err := stopProcess(node.cmd, c.config.stopTimeout); err != nil {

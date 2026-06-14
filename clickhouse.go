@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -120,8 +121,8 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 
 	cleanups := make([]func(), 0)
 	cleanup := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, cleanup := range slices.Backward(cleanups) {
+			cleanup()
 		}
 	}
 
