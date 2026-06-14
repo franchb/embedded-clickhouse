@@ -35,6 +35,12 @@ var ErrKeeperNotReady = errors.New("embedded-clickhouse: keeper quorum not ready
 // ErrNodeOutOfRange is returned when Node() is called with an index outside [0, replicas).
 var ErrNodeOutOfRange = errors.New("embedded-clickhouse: node index out of range")
 
+// ErrClusterUnsupportedOption is returned by Cluster.Start when the config sets a data
+// path or explicit port; in cluster mode these are auto-managed and cannot be honored.
+var ErrClusterUnsupportedOption = errors.New(
+	"embedded-clickhouse: ports and data path are auto-managed in cluster mode",
+)
+
 // Cluster manages a multi-replica ClickHouse cluster using embedded Keeper for coordination.
 // All replicas run on localhost with auto-allocated ports. The cluster presents a single
 // shard with N replicas, suitable for testing ReplicatedMergeTree tables with ON CLUSTER queries.
@@ -88,7 +94,7 @@ func NewClusterForTest(tb testing.TB, replicas int, config ...Config) *Cluster {
 }
 
 // Start launches all cluster nodes and waits for Keeper quorum.
-func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
+func (c *Cluster) Start() error { //nolint:funlen,cyclop // multi-phase orchestrator with config-guard branches
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -98,6 +104,14 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 
 	if c.replicas < minReplicas {
 		return fmt.Errorf("%w: got %d", ErrInvalidReplicaCount, c.replicas)
+	}
+
+	// Cluster mode auto-allocates all ports and uses temp data dirs per node. The
+	// single-node DataPath/TCPPort/HTTPPort options cannot be honored here (a node
+	// needs five ports, and Stop assumes ephemeral temp dirs), so reject them rather
+	// than silently ignore them.
+	if c.config.dataPath != "" || c.config.tcpPort != 0 || c.config.httpPort != 0 {
+		return ErrClusterUnsupportedOption
 	}
 
 	cleanups := make([]func(), 0)

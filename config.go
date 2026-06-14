@@ -62,14 +62,16 @@ func (c Config) Version(v ClickHouseVersion) Config {
 }
 
 // TCPPort sets the TCP port for the ClickHouse native protocol.
-// 0 means auto-allocate (default).
+// 0 means auto-allocate (default). Single-node only: Cluster.Start auto-allocates
+// every node's ports and returns ErrClusterUnsupportedOption if this is set.
 func (c Config) TCPPort(port uint32) Config {
 	c.tcpPort = port
 	return c
 }
 
 // HTTPPort sets the HTTP port for the ClickHouse HTTP interface.
-// 0 means auto-allocate (default).
+// 0 means auto-allocate (default). Single-node only: Cluster.Start auto-allocates
+// every node's ports and returns ErrClusterUnsupportedOption if this is set.
 func (c Config) HTTPPort(port uint32) Config {
 	c.httpPort = port
 	return c
@@ -82,6 +84,8 @@ func (c Config) CachePath(path string) Config {
 }
 
 // DataPath sets a persistent data directory that survives Stop.
+// Single-node only: cluster nodes always use per-node temp directories, so
+// Cluster.Start returns ErrClusterUnsupportedOption if this is set.
 func (c Config) DataPath(path string) Config {
 	c.dataPath = path
 	return c

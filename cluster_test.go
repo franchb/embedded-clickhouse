@@ -58,6 +58,28 @@ func TestCluster_InvalidReplicaCount(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidReplicaCount)
 }
 
+func TestCluster_RejectsUnsupportedOptions(t *testing.T) {
+	t.Parallel()
+
+	// Cluster mode auto-manages ports and data dirs; these single-node options must be
+	// rejected before any binary download, so this test stays hermetic. A valid replica
+	// count (3) is used so Start reaches the option-rejection branch.
+	cases := map[string]Config{
+		"DataPath": DefaultConfig().DataPath("/tmp/x"),
+		"TCPPort":  DefaultConfig().TCPPort(19000),
+		"HTTPPort": DefaultConfig().HTTPPort(18123),
+	}
+
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := NewCluster(3, cfg).Start()
+			assert.ErrorIs(t, err, ErrClusterUnsupportedOption)
+		})
+	}
+}
+
 func TestCluster_ClusterName(t *testing.T) {
 	t.Parallel()
 
