@@ -157,19 +157,19 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 			return cfgErr
 		}
 
-		cmd, startErr := startProcess(binPath, configPath, logger)
+		proc, startErr := startProcess(binPath, configPath, logger)
 		if startErr != nil {
 			return fmt.Errorf("embedded-clickhouse: start node %d: %w", i, startErr)
 		}
 
 		cleanups = append(cleanups, func() {
-			stopProcess(cmd, c.config.stopTimeout) //nolint:errcheck
+			stopProcess(proc, c.config.stopTimeout) //nolint:errcheck
 		})
 
 		nodes[i] = &EmbeddedClickHouse{
 			config:          c.config,
 			started:         true,
-			cmd:             cmd,
+			proc:            proc,
 			tmpDir:          tmpDir,
 			tcpPort:         ports[i].TCP,
 			httpPort:        ports[i].HTTP,
@@ -215,7 +215,7 @@ func (c *Cluster) Stop() error {
 	for i, node := range slices.Backward(c.nodes) {
 		node.mu.Lock()
 
-		if err := stopProcess(node.cmd, c.config.stopTimeout); err != nil {
+		if err := stopProcess(node.proc, c.config.stopTimeout); err != nil {
 			errs = append(errs, fmt.Errorf("node %d: %w", i, err))
 		}
 
@@ -226,7 +226,7 @@ func (c *Cluster) Stop() error {
 		}
 
 		node.started = false
-		node.cmd = nil
+		node.proc = nil
 		node.mu.Unlock()
 	}
 
@@ -307,21 +307,31 @@ func allocateClusterNodePorts() (clusterNodePorts, error) {
 }
 
 // waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.
+// If any node's process exits (or otherwise fails) during startup, the first error
+// cancels the shared context so the remaining nodes stop polling immediately instead
+// of burning the full start timeout. Cancellation is triggered only after a real error
+// is recorded, so the genuine failure (e.g. ErrServerExited) is the first error enqueued
+// and is what gets returned — never a sibling's "context canceled" artifact.
 // Returns the first error reported by any node, or nil if all are ready.
 func waitForAllNodesReady(ctx context.Context, nodes []*EmbeddedClickHouse) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	readyErrs := make(chan error, len(nodes))
 
 	var wg sync.WaitGroup
 	for i, node := range nodes {
 		wg.Add(1)
 
-		go func(i int, port uint32) {
+		go func(i int, port uint32, p *process) {
 			defer wg.Done()
 
-			if err := waitForReady(ctx, port); err != nil {
+			if err := waitForReadyOrExit(ctx, port, p); err != nil {
 				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
+
+				cancel() // stop sibling waits as soon as one node fails
 			}
-		}(i, node.httpPort)
+		}(i, node.httpPort, node.proc)
 	}
 
 	wg.Wait()
