@@ -284,39 +284,27 @@ func (c *Cluster) ClusterName() string {
 	return "test_cluster"
 }
 
-// allocateClusterNodePorts allocates the 5 ports needed for a single cluster node.
+// portsPerClusterNode is the number of distinct ports each cluster node needs:
+// TCP, HTTP, interserver, Keeper, and Keeper Raft.
+const portsPerClusterNode = 5
+
+// allocateClusterNodePorts allocates the distinct ports needed for a single
+// cluster node. The ports must not collide with one another, so they are
+// allocated as a batch with allocatePorts (which holds all listeners open at
+// once); allocating them via separate allocatePort calls could hand back the
+// same just-freed ephemeral port twice.
 func allocateClusterNodePorts() (clusterNodePorts, error) {
-	tcp, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	httpPort, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	interserver, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	keeper, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	keeperRaft, err := allocatePort()
+	ports, err := allocatePorts(portsPerClusterNode)
 	if err != nil {
 		return clusterNodePorts{}, err
 	}
 
 	return clusterNodePorts{
-		TCP:         tcp,
-		HTTP:        httpPort,
-		Interserver: interserver,
-		Keeper:      keeper,
-		KeeperRaft:  keeperRaft,
+		TCP:         ports[0],
+		HTTP:        ports[1],
+		Interserver: ports[2],
+		Keeper:      ports[3],
+		KeeperRaft:  ports[4],
 	}, nil
 }
 

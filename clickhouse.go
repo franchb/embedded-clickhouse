@@ -150,6 +150,12 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 	}
 
 	// Allocate ports.
+	//
+	// Known limitation: these two allocatePort calls share the flaw fixed for
+	// clusters (see allocatePorts) — allocating sequentially can hand back the
+	// same just-freed ephemeral port, so tcpPort could equal httpPort. The risk
+	// is far smaller here (two ports, and either may be pre-set from config), so
+	// it is intentionally left out of the cluster fix.
 	tcpPort := e.config.tcpPort
 	if tcpPort == 0 {
 		tcpPort, err = allocatePort()
