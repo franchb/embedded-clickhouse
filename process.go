@@ -35,6 +35,44 @@ func allocatePort() (uint32, error) {
 	return port, nil
 }
 
+// allocatePorts finds count distinct free TCP ports. Unlike calling allocatePort
+// in a loop, it keeps every listener open until all of them are bound, so the
+// kernel cannot reassign a just-freed ephemeral port to a later iteration. This
+// makes the returned ports distinct by construction rather than by chance.
+//
+// The same TOCTOU caveat documented on allocatePort applies once the listeners
+// are released here.
+func allocatePorts(count int) ([]uint32, error) {
+	listeners := make([]net.Listener, 0, count)
+
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
+
+	ports := make([]uint32, 0, count)
+
+	for range count {
+		//nolint:noctx // ephemeral bind-and-close; context is meaningless
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("embedded-clickhouse: allocate port: %w", err)
+		}
+
+		listeners = append(listeners, l)
+
+		tcpAddr, ok := l.Addr().(*net.TCPAddr)
+		if !ok {
+			return nil, fmt.Errorf("%w: %T", ErrUnexpectedAddrType, l.Addr())
+		}
+
+		ports = append(ports, uint32(tcpAddr.Port))
+	}
+
+	return ports, nil
+}
+
 // process wraps a started ClickHouse server command together with a single-shot
 // wait goroutine. cmd.Wait() is called exactly once (in startProcess); the result
 // is published via waitErr and broadcast by closing done. Both the startup monitor

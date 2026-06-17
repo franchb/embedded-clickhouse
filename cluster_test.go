@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,6 +148,43 @@ func TestAllocateClusterNodePorts(t *testing.T) {
 
 		seen[p] = true
 	}
+}
+
+// TestAllocateClusterNodePorts_AlwaysDistinct guards against regressing to
+// sequential bind-and-close allocation, which can hand back a just-freed
+// ephemeral port and produce a duplicate within a node's 5 ports. Distinctness
+// is guaranteed by construction (allocatePorts holds every listener open), but
+// allocating concurrently churns the ephemeral range as an extra stress check.
+func TestAllocateClusterNodePorts_AlwaysDistinct(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 200
+
+	var wg sync.WaitGroup
+
+	for range iterations {
+		wg.Go(func() {
+			np, err := allocateClusterNodePorts()
+			if err != nil {
+				t.Errorf("allocate cluster node ports: %v", err)
+
+				return
+			}
+
+			ports := []uint32{np.TCP, np.HTTP, np.Interserver, np.Keeper, np.KeeperRaft}
+			seen := make(map[uint32]bool, len(ports))
+
+			for _, port := range ports {
+				if seen[port] {
+					t.Errorf("duplicate port %d in %+v", port, np)
+				}
+
+				seen[port] = true
+			}
+		})
+	}
+
+	wg.Wait()
 }
 
 // --- Integration tests (skipped in short mode) ---
