@@ -354,6 +354,31 @@ func TestEnsureBinary_ExplicitPath(t *testing.T) {
 	}
 }
 
+// TestEnsureBinary_Exported verifies the exported EnsureBinary wrapper resolves an
+// explicit BinaryPath without any network access, mirroring TestEnsureBinary_ExplicitPath.
+func TestEnsureBinary_Exported(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake binary.
+	tmpDir := t.TempDir()
+
+	binPath := filepath.Join(tmpDir, "clickhouse")
+	if err := os.WriteFile(binPath, []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig().BinaryPath(binPath)
+
+	got, err := EnsureBinary(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got != binPath {
+		t.Errorf("binary = %q, want %q", got, binPath)
+	}
+}
+
 func TestEnsureBinary_ExplicitPathNotFound(t *testing.T) {
 	t.Parallel()
 
