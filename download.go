@@ -18,6 +18,19 @@ import (
 // httpClient is a shared HTTP client with a timeout to prevent indefinite hangs on slow CDNs.
 var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknoglobals
 
+// EnsureBinary resolves the ClickHouse binary described by cfg, downloading,
+// verifying, and caching it if necessary, and returns the path to the
+// executable. It performs no server startup — callers that only need the binary
+// (for example, to run `clickhouse local`) can use the returned path directly.
+//
+// Resolution follows the same precedence as Start: an explicit Config.BinaryPath
+// is honored as-is, otherwise a custom archive (path or URL) or the standard
+// GitHub release download is used, with SHA verification and on-disk caching
+// (content-addressed for custom assets, version-pinned for standard releases).
+func EnsureBinary(cfg Config) (string, error) {
+	return ensureBinary(cfg)
+}
+
 // ensureBinary returns the path to a ClickHouse binary, downloading it if necessary.
 func ensureBinary(cfg Config) (string, error) {
 	// Priority: BinaryPath > CustomArchivePath > CustomArchiveURL > standard download.
