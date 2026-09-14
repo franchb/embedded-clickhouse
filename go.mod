@@ -1,11 +1,11 @@
 module github.com/franchb/embedded-clickhouse
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/stretchr/testify v1.12.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
