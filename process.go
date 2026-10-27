@@ -167,8 +167,7 @@ func classifyWaitErr(err error) error {
 		return nil
 	}
 
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		if exitErr.ExitCode() == -1 || exitErr.ExitCode() == 143 {
 			return nil
 		}
