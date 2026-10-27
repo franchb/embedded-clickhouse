@@ -535,8 +535,7 @@ func redactURL(raw string) string {
 // error type intact (so callers can still errors.As for *url.Error and observe
 // net.Error timeouts) while removing the credentials.
 func redactURLError(err error) error {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return &url.Error{
 			Op:  urlErr.Op,
 			URL: redactURL(urlErr.URL),
