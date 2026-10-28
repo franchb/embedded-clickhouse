@@ -1,6 +1,7 @@
 package embeddedclickhouse
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -197,6 +198,37 @@ func TestWriteClusterNodeConfig_SettingsSortedDeterministically(t *testing.T) {
 
 	if idxAllow >= idxMemory || idxMemory >= idxServer {
 		t.Error("settings are not sorted alphabetically")
+	}
+}
+
+func TestWriteClusterNodeConfig_StartsWithXMLDeclaration(t *testing.T) {
+	t.Parallel()
+
+	configPath, err := writeClusterNodeConfig(t.TempDir(), 0, threeNodeTopology())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasPrefix(string(content), "<?xml") {
+		t.Errorf("config must start with the XML declaration, got %q", content[:min(len(content), 20)])
+	}
+}
+
+func TestWriteClusterNodeConfig_RejectsManagedKeys(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{"tcp_port", "users", "keeper_server", "zookeeper", "remote_servers", "macros"} {
+		topo := buildClusterTopology(threeNodeTopology().Nodes, map[string]string{key: "1"})
+
+		_, err := writeClusterNodeConfig(t.TempDir(), 0, topo)
+		if !errors.Is(err, ErrInvalidSettingKey) {
+			t.Errorf("setting %q: err = %v, want ErrInvalidSettingKey", key, err)
+		}
 	}
 }
 

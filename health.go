@@ -13,27 +13,25 @@ const (
 	healthRequestTimeout = 2 * time.Second
 )
 
-// waitForReady polls the ClickHouse HTTP /ping endpoint until it returns HTTP 200 or the context is cancelled.
-func waitForReady(ctx context.Context, httpPort uint32) error {
-	url := fmt.Sprintf("http://127.0.0.1:%d/ping", httpPort)
-	client := &http.Client{Timeout: healthRequestTimeout}
-
-	// Immediate poll to avoid unnecessary 100ms latency when the server is already up.
-	if ping(ctx, client, url) {
-		return nil
-	}
-
-	ticker := time.NewTicker(healthPollInterval)
+// pollUntil runs check immediately and then every interval until check reports done
+// or fails, or ctx ends (returning ctx.Err()). A receive on wake (for example a
+// process-exit channel being closed) triggers an extra check right away instead of
+// waiting for the next tick; a nil wake channel never fires.
+func pollUntil(ctx context.Context, interval time.Duration, wake <-chan struct{}, check func() (bool, error)) error {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
+		if done, err := check(); err != nil || done {
+			return err
+		}
+
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("embedded-clickhouse: server did not become ready: %w", ctx.Err())
+			return ctx.Err() //nolint:wrapcheck // callers add their own context
+		case <-wake:
+			wake = nil // a closed channel stays ready; check once, then rely on the ticker
 		case <-ticker.C:
-			if ping(ctx, client, url) {
-				return nil
-			}
 		}
 	}
 }
@@ -87,33 +85,21 @@ func waitForReadyOrExit(ctx context.Context, httpPort uint32, proc *process) err
 		return true, nil
 	}
 
-	// Immediate poll to avoid unnecessary 100ms latency when the server is already up.
-	if ready, err := check(); err != nil || ready {
-		return err
-	}
-
-	ticker := time.NewTicker(healthPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Prefer the specific exit error if the process died around the deadline.
-			if err := exited(); err != nil {
-				return err
-			}
-
-			return fmt.Errorf("embedded-clickhouse: server did not become ready: %w", ctx.Err())
-		case <-proc.done:
-			return exitError(proc)
-		case <-ticker.C:
-			if ready, err := check(); err != nil || ready {
-				return err
-			}
+	err := pollUntil(ctx, healthPollInterval, proc.done, check)
+	if err != nil && ctx.Err() != nil {
+		// Prefer the specific exit error if the process died around the deadline.
+		if exitErr := exited(); exitErr != nil {
+			return exitErr
 		}
+
+		return fmt.Errorf("embedded-clickhouse: server did not become ready: %w", err)
 	}
+
+	return err
 }
 
+// ping reports whether a GET of url answers HTTP 200. It is the single readiness
+// probe for both the server /ping endpoint and the Keeper quorum query.
 func ping(ctx context.Context, client *http.Client, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

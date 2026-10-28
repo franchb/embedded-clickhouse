@@ -3,9 +3,12 @@ package embeddedclickhouse
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -43,14 +46,172 @@ func TestEmbeddedClickHouse_Accessors(t *testing.T) {
 	t.Parallel()
 
 	s := &EmbeddedClickHouse{
-		tcpPort:  19000,
-		httpPort: 18123,
+		started: true,
+		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, stopTimeout: 0},
 	}
 
+	assert.True(t, s.Started())
 	assert.Equal(t, "127.0.0.1:19000", s.TCPAddr())
 	assert.Equal(t, "127.0.0.1:18123", s.HTTPAddr())
 	assert.Equal(t, "clickhouse://127.0.0.1:19000/default", s.DSN())
 	assert.Equal(t, "http://127.0.0.1:18123", s.HTTPURL())
+}
+
+// TestEmbeddedClickHouse_AccessorsWhenNotRunning pins that accessors never hand out
+// a well-formed but bogus "127.0.0.1:0" address before Start or after Stop.
+func TestEmbeddedClickHouse_AccessorsWhenNotRunning(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer()
+
+	assert.False(t, s.Started())
+	assert.Empty(t, s.TCPAddr())
+	assert.Empty(t, s.HTTPAddr())
+	assert.Empty(t, s.DSN())
+	assert.Empty(t, s.HTTPURL())
+}
+
+func TestResolveServerPorts(t *testing.T) {
+	t.Parallel()
+
+	tcp, http, err := resolveServerPorts(0, 0)
+	require.NoError(t, err)
+	assert.NotZero(t, tcp)
+	assert.NotZero(t, http)
+	assert.NotEqual(t, tcp, http)
+
+	tcp, http, err = resolveServerPorts(19000, 18123)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(19000), tcp)
+	assert.Equal(t, uint32(18123), http)
+
+	// A user-fixed port must never be handed out again for the other protocol.
+	for range 50 {
+		fixed, err := allocatePort()
+		require.NoError(t, err)
+
+		tcp, http, err = resolveServerPorts(fixed, 0)
+		require.NoError(t, err)
+		assert.Equal(t, fixed, tcp)
+		assert.NotEqual(t, fixed, http)
+	}
+}
+
+// TestStop_AbortsInFlightStart proves Stop does not block behind a slow Start (the
+// lock is not held across the readiness wait) and that it aborts that start.
+func TestStop_AbortsInFlightStart(t *testing.T) {
+	t.Parallel()
+
+	fake := writeSleepingBinary(t)
+	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+
+	s := NewServer(
+		DefaultConfig().
+			BinaryPath(fake).
+			Logger(io.Discard).
+			HTTPPort(httpPort).
+			StartTimeout(time.Minute),
+	)
+
+	startErr := make(chan error, 1)
+
+	go func() { startErr <- s.Start() }()
+
+	// Wait until the start is in flight; accessors must not block meanwhile.
+	require.Eventually(t, func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+
+		return s.gate.inFlight()
+	}, 5*time.Second, 10*time.Millisecond)
+
+	assert.Empty(t, s.DSN(), "accessors must answer while Start is in flight")
+	require.ErrorIs(t, s.Start(), ErrServerAlreadyStarted)
+
+	stopped := make(chan error, 1)
+
+	go func() { stopped <- s.Stop() }()
+
+	select {
+	case err := <-stopped:
+		require.ErrorIs(t, err, ErrServerNotStarted)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop blocked behind an in-flight Start")
+	}
+
+	require.ErrorIs(t, <-startErr, context.Canceled)
+	assert.False(t, s.Started())
+}
+
+// recordingTB captures Errorf calls and Cleanup registrations so a test can assert on
+// what a helper reports during cleanup.
+type recordingTB struct {
+	testing.TB
+
+	errs     []string
+	cleanups []func()
+}
+
+func (r *recordingTB) Helper() {}
+
+func (r *recordingTB) Errorf(format string, args ...any) {
+	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+}
+
+func (r *recordingTB) Cleanup(fn func()) {
+	r.cleanups = append(r.cleanups, fn)
+}
+
+// TestNewServerForTest_ExplicitStopIsNotAFailure: a test that stops the server itself
+// must not be failed by the registered cleanup finding it already stopped.
+func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingTB{TB: t, errs: nil, cleanups: nil}
+
+	s := NewServerForTest(rec, DefaultConfig().
+		BinaryPath(writeSleepingBinary(t)).
+		Logger(io.Discard).
+		HTTPPort(servePingStatus(t, http.StatusOK)))
+
+	require.NoError(t, s.Stop())
+
+	for _, fn := range rec.cleanups {
+		fn()
+	}
+
+	assert.Empty(t, rec.errs)
+}
+
+// TestStop_ZeroStopTimeoutUsesDefault: a zero StopTimeout must resolve to the default
+// for Stop too, not only for Start. With an unresolved 0, Stop would SIGKILL instantly
+// and report ErrStopTimeout instead of letting the server exit on SIGTERM.
+func TestStop_ZeroStopTimeoutUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer(DefaultConfig().
+		BinaryPath(writeSleepingBinary(t)).
+		Logger(io.Discard).
+		HTTPPort(servePingStatus(t, http.StatusOK)).
+		StopTimeout(0))
+
+	require.NoError(t, s.Start())
+	require.NoError(t, s.Stop())
+}
+
+func TestStartContext_Canceled(t *testing.T) {
+	t.Parallel()
+
+	fake := writeSleepingBinary(t)
+	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+
+	s := NewServer(DefaultConfig().BinaryPath(fake).Logger(io.Discard).HTTPPort(httpPort))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	require.ErrorIs(t, s.StartContext(ctx), context.DeadlineExceeded)
+	assert.False(t, s.Started())
 }
 
 func TestSentinelErrors(t *testing.T) {
@@ -73,20 +234,7 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	// Hold a listener answering non-200 on /ping and pin HTTPPort to it, so the
 	// readiness probe deterministically fails (the fake binary never binds a port)
 	// and no sibling t.Parallel() test can be assigned the port and answer 200.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	})
-
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	httpPort := uint32(l.Addr().(*net.TCPAddr).Port)
-
-	srv := &http.Server{Handler: mux}
-
-	go srv.Serve(l)
-	defer srv.Close()
+	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
 
 	s := NewServer(
 		DefaultConfig().
@@ -104,6 +252,8 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 		done <- s.Start()
 	}()
 
+	var err error
+
 	select {
 	case err = <-done:
 	case <-time.After(3 * time.Second):
@@ -117,6 +267,60 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 
 	// The server never became ready, so an explicit Stop reports not-started.
 	assert.ErrorIs(t, s.Stop(), ErrServerNotStarted)
+}
+
+// servePingStatus serves the given status on /ping from a held listener and returns
+// its port. Holding the listener keeps sibling parallel tests from being assigned it.
+func servePingStatus(t *testing.T, status int) uint32 {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	srv := &http.Server{Handler: mux}
+
+	go srv.Serve(l)
+
+	t.Cleanup(func() { srv.Close() })
+
+	return uint32(l.Addr().(*net.TCPAddr).Port)
+}
+
+// writeSleepingBinary writes a fake server that stays alive until signalled.
+func writeSleepingBinary(t *testing.T) string {
+	t.Helper()
+
+	// exec replaces the shell, so SIGTERM reaches sleep directly and stops it.
+	return writeScriptBinary(t, "#!/bin/sh\nexec sleep 300\n")
+}
+
+// writeStubbornBinary writes a fake server that ignores SIGTERM, so stopping it always
+// runs into the StopTimeout. Ignored dispositions survive exec, so sleep ignores it too.
+func writeStubbornBinary(t *testing.T) string {
+	t.Helper()
+
+	return writeScriptBinary(t, "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n")
+}
+
+func writeScriptBinary(t *testing.T, script string) string {
+	t.Helper()
+
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("/bin/sh not available")
+	}
+
+	path := filepath.Join(t.TempDir(), "fake-clickhouse.sh")
+
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
 }
 
 // --- Integration tests (skipped in short mode) ---

@@ -4,28 +4,31 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"text/template"
 )
 
-const configTemplate = `<?xml version="1.0"?>
-<clickhouse>
+// commonConfigTemplates holds the config blocks shared by single-node and cluster
+// configs. Both templates are parsed together with it, so the shared parts cannot drift.
+const commonConfigTemplates = `
+{{- define "logger"}}
     <logger>
         <level>warning</level>
         <console>1</console>
     </logger>
+{{- end}}
 
-    <tcp_port>{{.TCPPort}}</tcp_port>
-    <http_port>{{.HTTPPort}}</http_port>
-
+{{- define "paths"}}
     <path>{{xmlEscape .DataDir}}/</path>
     <tmp_path>{{xmlEscape .TmpDir}}/</tmp_path>
     <user_files_path>{{xmlEscape .UserFilesDir}}/</user_files_path>
     <format_schema_path>{{xmlEscape .FormatSchemaDir}}/</format_schema_path>
+{{- end}}
 
+{{- define "access"}}
     <users>
         <default>
             <password></password>
@@ -46,28 +49,35 @@ const configTemplate = `<?xml version="1.0"?>
     <quotas>
         <default/>
     </quotas>
-{{range $key, $value := .Settings}}
+{{- end}}
+
+{{- define "settings"}}
+{{- range $key, $value := .Settings}}
     <{{$key}}>{{xmlEscape $value}}</{{$key}}>
-{{end}}
+{{- end}}
+{{- end -}}
+`
+
+const configTemplate = `<?xml version="1.0"?>
+<clickhouse>
+{{- template "logger" .}}
+
+    <tcp_port>{{.TCPPort}}</tcp_port>
+    <http_port>{{.HTTPPort}}</http_port>
+{{template "paths" .}}
+{{template "access" .}}
+{{- template "settings" .}}
 </clickhouse>
 `
 
-// defaultServerSettings returns settings baked into every generated config.
-// User-supplied Settings override these values; any key not overridden
-// keeps its default.
-func defaultServerSettings() map[string]string {
-	return map[string]string{}
-}
-
-// mergeSettings returns defaultServerSettings with user values overlaid.
-// A nil input returns a copy of the defaults.
-func mergeSettings(user map[string]string) map[string]string {
-	defaults := defaultServerSettings()
-	merged := make(map[string]string, len(defaults)+len(user))
-	maps.Copy(merged, defaults)
-	maps.Copy(merged, user)
-
-	return merged
+// serverManagedKeys are the top-level elements the single-node template writes itself.
+// A user setting with one of these names would emit a second, conflicting element.
+//
+//nolint:gochecknoglobals // immutable lookup table
+var serverManagedKeys = []string{
+	"logger", "tcp_port", "http_port",
+	"path", "tmp_path", "user_files_path", "format_schema_path",
+	"users", "profiles", "quotas",
 }
 
 // validSettingKey matches safe XML element names for ClickHouse settings.
@@ -82,12 +92,18 @@ func xmlEscapeString(s string) string {
 	return buf.String()
 }
 
-//nolint:gochecknoglobals // compile once, reuse
-var configTmpl = template.Must(template.New("config").Funcs(template.FuncMap{
-	"xmlEscape": xmlEscapeString,
-}).Parse(configTemplate))
+// newConfigTemplate parses a config template together with the shared blocks.
+func newConfigTemplate(name, body string) *template.Template {
+	return template.Must(template.New(name).Funcs(template.FuncMap{
+		"xmlEscape": xmlEscapeString,
+	}).Parse(commonConfigTemplates + body))
+}
 
-type serverConfigData struct {
+//nolint:gochecknoglobals // compile once, reuse
+var configTmpl = newConfigTemplate("config", configTemplate)
+
+// baseConfigData holds the template fields shared by single-node and cluster configs.
+type baseConfigData struct {
 	TCPPort         uint32
 	HTTPPort        uint32
 	DataDir         string
@@ -97,49 +113,92 @@ type serverConfigData struct {
 	Settings        map[string]string
 }
 
-// writeServerConfig generates a ClickHouse XML config file in the given directory.
-func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
-	for k := range settings {
-		if !validSettingKey.MatchString(k) {
-			return "", fmt.Errorf("%w: %q (must match [a-zA-Z][a-zA-Z0-9_]*)", ErrInvalidSettingKey, k)
+// newBaseConfigData lays out the standard server directories under dir.
+func newBaseConfigData(dir string, tcpPort, httpPort uint32, settings map[string]string) baseConfigData {
+	return baseConfigData{
+		TCPPort:         tcpPort,
+		HTTPPort:        httpPort,
+		DataDir:         filepath.Join(dir, "data"),
+		TmpDir:          filepath.Join(dir, "tmp"),
+		UserFilesDir:    filepath.Join(dir, "user_files"),
+		FormatSchemaDir: filepath.Join(dir, "format_schemas"),
+		Settings:        settings,
+	}
+}
+
+// dirs returns the directories that must exist before the server starts.
+func (b baseConfigData) dirs() []string {
+	return []string{b.DataDir, b.TmpDir, b.UserFilesDir, b.FormatSchemaDir}
+}
+
+// validateSettings rejects setting keys that are not safe XML element names, or that
+// name an element the config template already writes (managed).
+func validateSettings(settings map[string]string, managed []string) error {
+	for key := range settings {
+		if !validSettingKey.MatchString(key) {
+			return fmt.Errorf("%w: %q (must match [a-zA-Z][a-zA-Z0-9_]*)", ErrInvalidSettingKey, key)
+		}
+
+		if slices.Contains(managed, key) {
+			return fmt.Errorf("%w: %q is managed by embedded-clickhouse and cannot be overridden",
+				ErrInvalidSettingKey, key)
 		}
 	}
 
-	dataDir := filepath.Join(dir, "data")
-	tmpDir := filepath.Join(dir, "tmp")
-	userFilesDir := filepath.Join(dir, "user_files")
-	formatSchemaDir := filepath.Join(dir, "format_schemas")
+	return nil
+}
 
-	for _, d := range []string{dataDir, tmpDir, userFilesDir, formatSchemaDir} {
+// makeDirs creates every directory in dirs.
+func makeDirs(dirs ...string) error {
+	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			return "", fmt.Errorf("embedded-clickhouse: create dir %s: %w", d, err)
+			return fmt.Errorf("embedded-clickhouse: create dir %s: %w", d, err)
 		}
+	}
+
+	return nil
+}
+
+// writeConfigFile renders tmpl into path. On any failure the partial file is removed,
+// so a half-written config is never left behind.
+func writeConfigFile(path string, tmpl *template.Template, data any) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("embedded-clickhouse: create config: %w", err)
+	}
+
+	if err := tmpl.Execute(f, data); err != nil {
+		f.Close()
+		os.Remove(path)
+
+		return fmt.Errorf("embedded-clickhouse: write config: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+
+		return fmt.Errorf("embedded-clickhouse: close config: %w", err)
+	}
+
+	return nil
+}
+
+// writeServerConfig generates a ClickHouse XML config file in the given directory.
+func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
+	if err := validateSettings(settings, serverManagedKeys); err != nil {
+		return "", err
+	}
+
+	data := newBaseConfigData(dir, tcpPort, httpPort, settings)
+
+	if err := makeDirs(data.dirs()...); err != nil {
+		return "", err
 	}
 
 	configPath := filepath.Join(dir, "config.xml")
 
-	f, err := os.Create(configPath)
-	if err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: create config: %w", err)
-	}
-
-	data := serverConfigData{
-		TCPPort:         tcpPort,
-		HTTPPort:        httpPort,
-		DataDir:         dataDir,
-		TmpDir:          tmpDir,
-		UserFilesDir:    userFilesDir,
-		FormatSchemaDir: formatSchemaDir,
-		Settings:        mergeSettings(settings),
-	}
-
-	if err := configTmpl.Execute(f, data); err != nil {
-		f.Close()
-		return "", fmt.Errorf("embedded-clickhouse: write config: %w", err)
-	}
-
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: close config: %w", err)
+	if err := writeConfigFile(configPath, configTmpl, data); err != nil {
+		return "", err
 	}
 
 	return configPath, nil

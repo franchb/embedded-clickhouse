@@ -1,13 +1,12 @@
 package embeddedclickhouse
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
-	"syscall"
-	"time"
+	"sync"
 )
 
 // allocatePort finds a free TCP port by binding to :0 and immediately closing.
@@ -85,95 +84,43 @@ type process struct {
 	waitErr error         // safe to read only after <-done (happens-before via close)
 }
 
-// startProcess launches the ClickHouse server process and starts the single Wait goroutine.
-func startProcess(binaryPath, configPath string, logger io.Writer) (*process, error) {
-	//nolint:noctx // lifecycle managed via SIGTERM/SIGKILL, not context
-	cmd := exec.Command(binaryPath, "server", "--config-file="+configPath)
-	cmd.Stdout = logger
-	cmd.Stderr = logger
-	// Set process group so we can kill the whole group on stop.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("embedded-clickhouse: start process: %w", err)
+// processOutput returns the writer to use as a server process's stdout/stderr.
+// A nil logger discards the output: Logger(nil) is an explicit request for silence,
+// so it must not fall back to os.Stdout (which would re-enable the noisiest stream).
+func processOutput(logger io.Writer) io.Writer {
+	if logger == nil {
+		return io.Discard
 	}
 
-	proc := &process{cmd: cmd, done: make(chan struct{}), waitErr: nil}
-
-	go func() {
-		proc.waitErr = cmd.Wait()
-		close(proc.done)
-	}()
-
-	return proc, nil
+	return logger
 }
 
-// stopProcess sends SIGTERM and waits for graceful shutdown, then SIGKILL if needed.
-// It never calls cmd.Wait() — that is owned by the goroutine started in startProcess.
-// Instead it observes completion via proc.done and classifies proc.waitErr.
-func stopProcess(proc *process, timeout time.Duration) error {
-	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
-		return nil
+// sharedOutput returns a writer that is safe to hand to several server processes at once.
+//
+// For a writer that is not an *os.File, os/exec copies each child's output through its
+// own goroutine, so N processes sharing one writer means N goroutines calling Write
+// concurrently. Most writers (bytes.Buffer, testing adapters) are not safe for that,
+// so they are wrapped in a mutex. *os.File is handed to the child as a file descriptor
+// (no copy goroutine), and io.Discard is stateless, so both pass through unchanged.
+func sharedOutput(logger io.Writer) io.Writer {
+	out := processOutput(logger)
+
+	if _, ok := out.(*os.File); ok || out == io.Discard {
+		return out
 	}
 
-	// If the process has already exited (e.g. it died during startup and the
-	// cleanup path is now stopping it), skip signaling: the PID has been reaped
-	// and could be recycled to an unrelated process group.
-	select {
-	case <-proc.done:
-		return classifyWaitErr(proc.waitErr)
-	default:
-	}
-
-	// Send SIGTERM to the process group.
-	pgid, err := syscall.Getpgid(proc.cmd.Process.Pid)
-	if err != nil {
-		// The process is already gone — it may have exited in the race between the
-		// non-blocking check above and now. Drain the Wait result and classify it
-		// rather than masking a recorded abnormal exit with a nil return.
-		<-proc.done
-
-		return classifyWaitErr(proc.waitErr)
-	}
-
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-
-	select {
-	case <-time.After(timeout):
-		// If the process exited right at the deadline, prefer the real exit
-		// classification over a timeout.
-		select {
-		case <-proc.done:
-			return classifyWaitErr(proc.waitErr)
-		default:
-		}
-
-		// Force kill after timeout, then wait for the Wait goroutine to finish.
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-
-		<-proc.done
-
-		return ErrStopTimeout
-	case <-proc.done:
-		return classifyWaitErr(proc.waitErr)
-	}
+	return &syncWriter{mu: sync.Mutex{}, w: out}
 }
 
-// classifyWaitErr maps cmd.Wait()'s error to a stop result. An exit caused by our
-// SIGTERM/SIGKILL (exit code -1 for signals, or 143 = 128+SIGTERM) is expected and
-// reported as success; any other exit or I/O error is surfaced.
-func classifyWaitErr(err error) error {
-	if err == nil {
-		return nil
-	}
+// syncWriter serializes Write calls to an underlying writer.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
 
-	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		if exitErr.ExitCode() == -1 || exitErr.ExitCode() == 143 {
-			return nil
-		}
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		return err
-	}
-	// Non-ExitError (e.g., I/O error waiting on process): surface it.
-	return err
+	return s.w.Write(p) //nolint:wrapcheck // transparent pass-through writer
 }

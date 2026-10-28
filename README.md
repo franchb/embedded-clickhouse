@@ -71,9 +71,13 @@ func TestQuery(t *testing.T) {
 | HTTP Port          | Auto-allocated                                       |
 | Cache Path         | `$XDG_CACHE_HOME/embedded-clickhouse/` or `~/.cache/embedded-clickhouse/` |
 | Data Path          | Temporary directory (removed on Stop)                |
-| Start Timeout      | 30 seconds                                           |
+| Start Timeout      | 30 seconds (240 seconds in cluster mode)             |
 | Stop Timeout       | 10 seconds                                           |
 | Logger             | `os.Stdout`                                          |
+
+A zero `StartTimeout` or `StopTimeout` means "use the default". `Start` validates the
+configuration before downloading anything and returns `ErrInvalidConfig` for an empty
+version, a port above 65535, or `TCPPort == HTTPPort`.
 
 ### Minimal usage
 
@@ -140,7 +144,7 @@ func TestSomething(t *testing.T) {
 ```go
 func TestInsertAndSelect(t *testing.T) {
     ch := embeddedclickhouse.NewServerForTest(t)
-    // Stop() is called via t.Cleanup
+    // Stop() is called via t.Cleanup (calling ch.Stop() yourself is fine too)
 
     db, err := sql.Open("clickhouse", ch.DSN())
     if err != nil {
@@ -212,12 +216,14 @@ cluster.ClusterName()   // "test_cluster"
 | Configuration           | Default                 |
 |-------------------------|-------------------------|
 | Replicas                | User-specified (min 2)  |
-| Start Timeout           | 120 seconds             |
-| Memory per node         | 1 GiB (`max_server_memory_usage`) |
+| Start Timeout           | 240 seconds             |
+| Memory per node         | ClickHouse default (no explicit limit) |
 | Cluster name            | `test_cluster`          |
 | All ports               | Auto-allocated          |
 
-Each node requires 5 ports (TCP, HTTP, interserver HTTP, Keeper client, Keeper Raft), all auto-allocated on localhost. The 1 GiB per-node memory default prevents OOM on CI machines running 3 replicas. Override via `Settings(map[string]string{"max_server_memory_usage": "2147483648"})`.
+Each node requires 5 ports (TCP, HTTP, interserver HTTP, Keeper client, Keeper Raft), all auto-allocated on localhost, so `TCPPort`, `HTTPPort` and `DataPath` are rejected in cluster mode (`ErrClusterUnsupportedOption`). On CI machines running 3 replicas, cap memory per node via `Settings(map[string]string{"max_server_memory_usage": "1073741824"})` (see [Memory limits](#memory-limits)).
+
+`Cluster.Stop` stops all nodes concurrently. Node handles obtained from `Node()`/`Nodes()` are invalidated by `Stop`: their accessors return `""`.
 
 ### Composability
 
@@ -249,6 +255,18 @@ ch := embeddedclickhouse.NewServer(
 
 The archive is downloaded, extracted, and cached (keyed by URL). Subsequent runs skip the download.
 
+For a private registry, pass credentials as a header rather than in the URL (URLs end up in logs and error messages; embedded-clickhouse masks them, but a header never appears there at all):
+
+```go
+ch := embeddedclickhouse.NewServer(
+    embeddedclickhouse.DefaultConfig().
+        CustomArchiveURL("https://gitlab.example.com/api/v4/projects/my-project/packages/generic/clickhouse/26.3.3.20.1/clickhouse_26.3.3.20.1_linux_amd64.tar.gz").
+        DownloadHeader("PRIVATE-TOKEN", os.Getenv("GITLAB_TOKEN")),
+)
+```
+
+Headers are sent only to `CustomArchiveURL` and `BinaryRepositoryURL`, never to the default GitHub source, and they are dropped as soon as a redirect leaves the original host (e.g. a registry redirecting to object storage).
+
 ### Checksum verification
 
 Optionally verify the archive with SHA256 and/or SHA512:
@@ -262,7 +280,9 @@ ch := embeddedclickhouse.NewServer(
 )
 ```
 
-When no hash is provided, verification is skipped for custom assets.
+When no hash is provided, verification is skipped for custom assets. For standard downloads, the published `.sha512` is always checked; a missing checksum fails the download (`ErrSHA512Unavailable`) unless `AllowMissingChecksum(true)` is set.
+
+Downloads are capped at 4 GiB (and the extracted binary at 4 GiB), and a download that receives no data for 2 minutes fails with `ErrDownloadStalled`.
 
 ### Priority
 
@@ -295,10 +315,14 @@ custom := base.Version(embeddedclickhouse.V25_3) // base is unchanged
 | `CustomArchiveURL(string)` | Remote URL to a `.tar.gz` archive (fully custom URL)     |
 | `SHA256(string)`           | Expected SHA256 hex digest for custom archive verification |
 | `SHA512(string)`           | Expected SHA512 hex digest for custom archive verification |
-| `StartTimeout(time.Duration)` | Max wait for server readiness                         |
-| `StopTimeout(time.Duration)`  | Max wait for graceful shutdown                        |
-| `Logger(io.Writer)`        | Destination for server stdout/stderr                     |
+| `AllowMissingChecksum(bool)` | Tolerate a missing `.sha512` on a mirror (default: fail) |
+| `DownloadHeader(key, value)` | HTTP header for custom download sources (e.g. auth)    |
+| `StartTimeout(time.Duration)` | Max wait for server readiness (0 = default)           |
+| `StopTimeout(time.Duration)`  | Max wait for graceful shutdown (0 = default)          |
+| `Logger(io.Writer)`        | Destination for download progress and server stdout/stderr (`nil` silences both) |
 | `Settings(map[string]string)` | Arbitrary ClickHouse server settings                  |
+
+`Settings` keys must be valid XML element names and must not name an element embedded-clickhouse writes itself (`tcp_port`, `path`, `users`, `logger`, and in cluster mode `keeper_server`, `zookeeper`, `remote_servers`, `macros`, ...); such keys fail with `ErrInvalidSettingKey`.
 
 ## Available versions
 
@@ -313,7 +337,7 @@ Any version string can be used — these constants are provided for convenience.
 
 ## Server accessors
 
-After `Start()` returns successfully:
+After `Start()` returns successfully (they return `""` before `Start` completes and after `Stop`; `Started()` reports the state):
 
 | Method      | Example return value                          |
 |-------------|-----------------------------------------------|
@@ -321,6 +345,8 @@ After `Start()` returns successfully:
 | `HTTPAddr()`| `"127.0.0.1:18123"`                          |
 | `DSN()`     | `"clickhouse://127.0.0.1:19000/default"`     |
 | `HTTPURL()` | `"http://127.0.0.1:18123"`                   |
+
+`StartContext(ctx)` (and `Cluster.StartContext`) aborts the download and readiness wait when `ctx` is done. `Stop` called while a `Start` is in progress aborts that start. `EnsureBinary`/`EnsureBinaryContext` resolve and cache the binary without starting a server.
 
 ## Platform support
 
@@ -330,6 +356,8 @@ After `Start()` returns successfully:
 | Linux  | arm64 | `.tgz` archive |
 | macOS  | amd64 | Raw binary  |
 | macOS  | arm64 | Raw binary  |
+
+The package also compiles on other platforms (e.g. Windows), where `Start` returns `ErrUnsupportedPlatform`.
 
 ## CI caching
 
@@ -368,8 +396,8 @@ Environments with less than 2 GB total RAM will be fragile regardless of setting
 3. **Cache** — stores the extracted binary at `~/.cache/embedded-clickhouse/` for reuse
 4. **Configure** — generates a minimal XML config with allocated ports and a temp data directory
 5. **Start** — launches `clickhouse server` as a child process
-6. **Health check** — polls `GET /ping` every 100ms until the server responds
-7. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory
+6. **Health check** — polls `GET /ping` every 100ms until the server responds; if the process exits first, `Start` fails immediately with `ErrServerExited`
+7. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory. A server that crashed (e.g. SIGSEGV, OOM kill) before `Stop` is reported as an error, not as a clean stop
 
 ## License
 

@@ -80,6 +80,14 @@ jobs:
       - name: Go Vet
         run: go vet ./...
 
+      # The package must keep compiling on every GOOS so cross-building consumers get
+      # ErrUnsupportedPlatform at runtime instead of a build failure.
+      - name: Cross-compile
+        run: |
+          for goos in windows darwin freebsd; do
+            GOOS="$goos" go vet ./...
+          done
+
       - name: Go Mod Tidy
         run: go mod tidy && git diff --exit-code
 

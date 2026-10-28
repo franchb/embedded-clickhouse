@@ -14,6 +14,47 @@ import (
 // (a static sentinel rather than an inline errors.New, per err113).
 var errTestProcExit = errors.New("embedded-clickhouse: test process exited")
 
+// liveProc returns a process stand-in that never exits.
+func liveProc() *process {
+	return &process{cmd: nil, done: make(chan struct{}), waitErr: nil}
+}
+
+func TestPollUntil(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+
+	err := pollUntil(t.Context(), time.Millisecond, nil, func() (bool, error) {
+		calls++
+		return calls == 3, nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("err = %v, calls = %d; want nil, 3", err, calls)
+	}
+
+	// wake triggers a check without waiting for the (very long) interval.
+	wake := make(chan struct{})
+	close(wake)
+
+	calls = 0
+
+	err = pollUntil(t.Context(), time.Hour, wake, func() (bool, error) {
+		calls++
+		return calls == 2, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("wake: err = %v, calls = %d; want nil, 2", err, calls)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	err = pollUntil(ctx, time.Millisecond, nil, func() (bool, error) { return false, nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
 func TestWaitForReady_ImmediateSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -38,7 +79,7 @@ func TestWaitForReady_ImmediateSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = waitForReady(ctx, port)
+	err = waitForReadyOrExit(ctx, port, liveProc())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +97,7 @@ func TestWaitForReady_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	err = waitForReady(ctx, port)
+	err = waitForReadyOrExit(ctx, port, liveProc())
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -106,7 +147,7 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = waitForReady(ctx, port)
+	err = waitForReadyOrExit(ctx, port, liveProc())
 	if err != nil {
 		t.Fatal(err)
 	}

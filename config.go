@@ -1,10 +1,22 @@
 package embeddedclickhouse
 
 import (
+	"encoding/hex"
+	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"os"
 	"time"
+)
+
+const (
+	// defaultStartTimeout bounds the readiness wait of a single server.
+	defaultStartTimeout = 30 * time.Second
+	// defaultStopTimeout bounds graceful shutdown before the process is killed.
+	defaultStopTimeout = 10 * time.Second
+	// maxPort is the largest valid TCP port number.
+	maxPort = 65535
 )
 
 // ClickHouseVersion represents a ClickHouse server version string.
@@ -39,20 +51,20 @@ type Config struct {
 	sha256               string
 	sha512hash           string
 	allowMissingChecksum bool
+	httpHeaders          http.Header
 	startTimeout         time.Duration
-	startTimeoutSet      bool
 	stopTimeout          time.Duration
 	logger               io.Writer
 	settings             map[string]string
 }
 
-// DefaultConfig returns a Config with sensible defaults.
+// DefaultConfig returns a Config with sensible defaults. StartTimeout is left at 0,
+// which resolves to 30s for a single server and 240s for a Cluster.
 func DefaultConfig() Config {
 	return Config{
-		version:      DefaultVersion,
-		startTimeout: 30 * time.Second,
-		stopTimeout:  10 * time.Second,
-		logger:       os.Stdout,
+		version:     DefaultVersion,
+		stopTimeout: defaultStopTimeout,
+		logger:      os.Stdout,
 	}
 }
 
@@ -145,21 +157,41 @@ func (c Config) AllowMissingChecksum(allow bool) Config {
 	return c
 }
 
-// StartTimeout sets the maximum time to wait for the server to become ready.
-func (c Config) StartTimeout(d time.Duration) Config {
-	c.startTimeout = d
-	c.startTimeoutSet = true
+// DownloadHeader adds an HTTP header (for example "Authorization" or "PRIVATE-TOKEN")
+// to download requests, so a private mirror's credentials need not ride in the URL.
+// Headers are sent only to user-chosen sources: CustomArchiveURL and
+// BinaryRepositoryURL (including its .sha512 files), never to the default GitHub
+// release URL. They are also dropped as soon as a redirect leaves the original host,
+// so a registry that redirects to object storage never forwards them. Calling it again
+// with the same key adds a value.
+func (c Config) DownloadHeader(key, value string) Config {
+	h := c.httpHeaders.Clone()
+	if h == nil {
+		h = make(http.Header)
+	}
+
+	h.Add(key, value)
+	c.httpHeaders = h
 
 	return c
 }
 
+// StartTimeout sets the maximum time to wait for the server to become ready.
+// 0 (the default) means 30s for a single server and 240s for a Cluster.
+func (c Config) StartTimeout(d time.Duration) Config {
+	c.startTimeout = d
+	return c
+}
+
 // StopTimeout sets the maximum time to wait for the server to shut down gracefully.
+// 0 means the default (10s).
 func (c Config) StopTimeout(d time.Duration) Config {
 	c.stopTimeout = d
 	return c
 }
 
-// Logger sets the writer for server stdout/stderr output.
+// Logger sets the writer for download progress and server stdout/stderr output.
+// nil silences both.
 func (c Config) Logger(w io.Writer) Config {
 	c.logger = w
 	return c
@@ -174,4 +206,63 @@ func (c Config) Settings(s map[string]string) Config {
 	c.settings = m
 
 	return c
+}
+
+// resolve validates the config and fills zero-valued timeouts with defaults, so a
+// misconfiguration fails before any download. defaultStart is the mode's default
+// StartTimeout, and managedKeys are the setting names its config template writes.
+func (c Config) resolve(defaultStart time.Duration, managedKeys []string) (Config, error) {
+	if c.startTimeout <= 0 {
+		c.startTimeout = defaultStart
+	}
+
+	if c.stopTimeout <= 0 {
+		c.stopTimeout = defaultStopTimeout
+	}
+
+	if err := c.validateBinarySource(); err != nil {
+		return c, err
+	}
+
+	if c.tcpPort > maxPort || c.httpPort > maxPort {
+		return c, fmt.Errorf("%w: ports must be at most %d (tcp=%d, http=%d)",
+			ErrInvalidConfig, maxPort, c.tcpPort, c.httpPort)
+	}
+
+	if c.tcpPort != 0 && c.tcpPort == c.httpPort {
+		return c, fmt.Errorf("%w: TCPPort and HTTPPort are both %d", ErrInvalidConfig, c.tcpPort)
+	}
+
+	if err := validateSettings(c.settings, managedKeys); err != nil {
+		return c, err
+	}
+
+	return c, nil
+}
+
+// validateBinarySource checks the options that select and verify the binary.
+func (c Config) validateBinarySource() error {
+	usesRelease := c.binaryPath == "" && c.customArchivePath == "" && c.customArchiveURL == ""
+	if usesRelease && c.version == "" {
+		return fmt.Errorf("%w: version must not be empty", ErrInvalidConfig)
+	}
+
+	if err := validateHexDigest("SHA256", c.sha256, sha256HexLen); err != nil {
+		return err
+	}
+
+	return validateHexDigest("SHA512", c.sha512hash, sha512HexLen)
+}
+
+// validateHexDigest checks that a configured digest (if any) is hex of the right length.
+func validateHexDigest(name, digest string, wantLen int) error {
+	if digest == "" {
+		return nil
+	}
+
+	if _, err := hex.DecodeString(digest); err != nil || len(digest) != wantLen {
+		return fmt.Errorf("%w: %s must be %d hex characters", ErrInvalidConfig, name, wantLen)
+	}
+
+	return nil
 }
