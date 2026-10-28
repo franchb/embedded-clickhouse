@@ -10,13 +10,52 @@ via cross-compile and `go run`). The 4 lower-confidence extras were surfaced but
 individually verified.
 
 Each item below is self-contained: mechanism, trigger, and suggested fix. Check off as
-resolved. Line numbers are valid at commit `dba7511`.
+resolved. Line numbers in the item bodies are valid at commit `dba7511` (kept as the
+historical record); current locations for open items are in the status table below.
+
+## Status @ `1cc4b25` (main, 2026-10-28)
+
+Each item was re-checked against the current `main`; open items were re-located. Resolved:
+6 of 24 · partially resolved: 1 · open: 17. `GOOS=windows go build ./...` re-run: still fails.
+
+| # | Status | Resolved by / current location |
+|---|--------|--------------------------------|
+| 1 | ✅ fixed | #37 (`6b25099`): `waitForReadyOrExit` (`health.go:57`), single Wait goroutine (`process.go`) |
+| 2 | ✅ fixed | #38 (`933a6f8`): `flock` sidecar (`filelock_unix.go`), `os.CreateTemp` + rename |
+| 3 | ✅ fixed | #38 (`933a6f8`): `ensureCustomArchiveFromPath` takes the same lock and re-stats |
+| 4 | ✅ fixed | #35 (`97d2956`): fail closed (`ErrSHA512Unavailable`), `AllowMissingChecksum` opt-out, lenient `parseSHA512` |
+| 5 | ✅ fixed (redaction) | #35 (`97d2956`): `redactURL`/`redactURLError`. The auth-header option is still missing; credentials still travel in the URL |
+| 6 | ✅ fixed (reject) | #34 (`586c7cb`): `ErrClusterUnsupportedOption` (`cluster.go:112`) |
+| 7 | open | `cache.go:35` (key still version+GOOS+GOARCH), `download.go:179` |
+| 8 | open | `clickhouse.go:87` (no validation), `clickhouse.go:214` (zero timeout), `process.go:142`, `config.go` port setters; `startTimeoutSet` sentinel still present |
+| 9 | open | `process.go:171` (`ExitCode() == -1` still treated as clean) |
+| 10 | open | `process.go:95,129,139,152`. Note: #38 already split file locking into `filelock_unix.go` (`!windows`) and a `filelock_other.go` (`windows`) stub, so only `process.go` blocks a Windows build |
+| 11 | open | `cluster.go:156-174` (one writer shared by all nodes) |
+| 12 | open | `extract.go:87`, `download.go:319` (unbounded `io.Copy`) |
+| 13 | open | `clickhouse.go:109`, `cluster.go:87` |
+| 14 | open | `cluster.go:242` (only `started`/`proc` reset; ports and `clusterManaged` remain) |
+| 15 | open | `extract.go:71` |
+| 16 | open | `server_config.go:74,103`, `cluster_config.go:190` |
+| 17 | open | `clickhouse.go:266-295` |
+| 18 | ◐ partial | #39 (`cd20eef`): cluster uses `allocatePorts` (held listeners). Single-node is still sequential, documented at `clickhouse.go:154` |
+| C1 | open | `cluster.go:184-194` still writes private node fields; dead `interserverPort`/`keeperPort`/`keeperRaftPort` remain |
+| C2 | open | `cluster.go:376` ≡ `health.go:117`. Also, `waitForReady` (`health.go:17`) now has only test callers |
+| C3 | open | `server_config.go:101` vs `cluster_config.go:184` |
+| C4 | open | `download.go:67,364,433,477` |
+| C5 | open | `clickhouse.go:120,233`, `cluster.go:98,219` |
+| C6 | open | `cluster.go:229` (sequential reverse-order stop) |
+
+Lower-confidence extras: the HTTP timeout (`download.go:19`), `Logger(nil)` → stdout
+(`clickhouse.go`, `cluster.go:156`) and `Nodes()` returning the live slice (`cluster.go:270`)
+are unchanged. **The `gitlab_integration_test.go` extra is withdrawn**: that file has never
+existed in this repository's history (`git log --all -- gitlab_integration_test.go` is
+empty), and the same file was cited as evidence in item 5.
 
 ---
 
 ## P1 — Critical correctness & security
 
-### [ ] 1. `Start` never monitors the child process; readiness is HTTP-ping-only
+### [x] 1. `Start` never monitors the child process; readiness is HTTP-ping-only
 **Where:** `clickhouse.go:201` (`waitForReady` is the only check after `startProcess`); `health.go:55` (`ping` accepts any HTTP 200)
 **Bug:** Nothing watches `cmd.Wait` during startup.
 - A child that dies instantly (busy port, bad setting, corrupt binary, missing glibc) burns the full `startTimeout` (30 s single / 240 s cluster) polling a dead port, then returns a misleading `did not become ready: context deadline exceeded`. The real exit error is discarded (`clickhouse.go:193`, `//nolint:errcheck`).
@@ -24,27 +63,27 @@ resolved. Line numbers are valid at commit `dba7511`.
 
 **Fix:** run `cmd.Wait()` in a goroutine; `select` on {process exited, ready, ctx done}. On early exit, return the exit error immediately. Optionally verify identity via `/ping` only after confirming the child is still alive, or query a nonce setting.
 
-### [ ] 2. Cross-process cache corruption: no file locking, deterministic `.tmp` names
+### [x] 2. Cross-process cache corruption: no file locking, deterministic `.tmp` names
 **Where:** `download.go:17` (`downloadMu` is process-local), `download.go:189` (`asset.filename+".tmp"`), `download.go:190` (deferred `os.Remove` of the shared path), `extract.go:79-81` (`destPath+".tmp"`, `O_CREATE|O_WRONLY|O_TRUNC`, no `O_EXCL`), `download.go:140` (stat-only freshness)
 **Bug:** Two `go test` processes with a cold cache truncate/delete each other's in-flight files. Where verification is skipped (missing `.sha512`, unhashed `CustomArchiveURL`), an interleaved file is renamed into the cache and trusted forever by the stat-only check.
 **Fix:** per-cache-entry advisory lock (`flock` on a `.lock` file) around download+extract, plus unique temp names (`os.CreateTemp` in the same dir) with rename-into-place.
 
-### [ ] 3. In-process race: `ensureCustomArchiveFromPath` skips `downloadMu`
+### [x] 3. In-process race: `ensureCustomArchiveFromPath` skips `downloadMu`
 **Where:** `download.go:45-79` (no lock; contrast `download.go:97-103` and `144-150` which lock and double-check)
 **Bug:** Two concurrent `Start`s sharing one `CustomArchivePath` both stat-miss `binPath` (`download.go:67`) and both extract to the identical `binPath+".tmp"` → spurious rename failures, or a truncated binary persisted into the content-addressed cache.
 **Fix:** take `downloadMu` (or the per-key lock from item 2) and re-stat after acquiring, exactly like the other two ensure paths.
 
-### [ ] 4. Checksum verification fails open, and strictness is inverted
+### [x] 4. Checksum verification fails open, and strictness is inverted
 **Where:** `download.go:275-281` (non-200 on `.sha512` → warn + `return nil`; silent when logger is nil), `download.go:311-316` (`parseSHA512` requires exactly `<hash> <exact-filename>`), `download.go:336-338` (custom-archive hashes optional)
 **Bug:** A mirror that 404s the checksum bypasses verification entirely (unverified binary cached + executed forever), while a mirror serving a *valid but differently formatted* checksum (bare hash, `hash *file`, `hash ./file`) hard-fails every Start with `ErrSHA512NotFound`. Less verification data succeeds; slightly different format aborts.
 **Fix:** make missing checksum a hard error by default (opt-out flag for air-gapped mirrors); accept the common sha512sum output variants (bare hash, `*file`, `./file` prefixes).
 
-### [ ] 5. Credential leak: full `customArchiveURL` in logs and error chains
+### [x] 5. Credential leak: full `customArchiveURL` in logs and error chains
 **Where:** `download.go:105` (`logf(... "Downloading ClickHouse from %s", cfg.customArchiveURL)`; default logger is `os.Stdout`, `config.go:54`), `download.go:240,245` (URL baked into wrapped errors)
-**Bug:** The documented private-GitLab `CustomArchiveURL` use case (README:228,246; `gitlab_integration_test.go`) offers no auth-header option — `downloadFile` uses a bare `httpClient.Get`, so any credentials must ride in the URL (`oauth2:glpat-…@` or `?private_token=…`). Such tokens land in CI logs on every cold start and in `tb.Fatal` output on any failure. No redaction exists.
+**Bug:** The documented private-GitLab `CustomArchiveURL` use case (README:228,246) offers no auth-header option — `downloadFile` uses a bare `httpClient.Get`, so any credentials must ride in the URL (`oauth2:glpat-…@` or `?private_token=…`). Such tokens land in CI logs on every cold start and in `tb.Fatal` output on any failure. No redaction exists.
 **Fix:** log/wrap `u.Redacted()` (and strip query params or redact known token params); longer-term, add an auth-header option so credentials don't ride in the URL.
 
-### [ ] 6. Cluster ignores `DataPath`/`TCPPort`/`HTTPPort` and deletes "persistent" data
+### [x] 6. Cluster ignores `DataPath`/`TCPPort`/`HTTPPort` and deletes "persistent" data
 **Where:** `cluster.go:126-133` (ports always auto-allocated), `cluster.go:147` (always `os.MkdirTemp`), `cluster.go:223-225` (`Stop` unconditionally `os.RemoveAll`s node dirs — contrast single-node guard `clickhouse.go:235`), `config.go:84` (doc: data "survives Stop")
 **Bug:** User-configured data path and ports are silently ignored in cluster mode, and `Stop` deletes node data despite the documented persistence contract. No error or warning.
 **Fix:** either honor the options (per-node subdirs under `dataPath`, `tcpPort+i` strides) or return a validation error from `NewCluster` when unsupported options are set. Never `RemoveAll` when a user data path is in play.
@@ -152,13 +191,21 @@ Custom archives: up to **3 full reads per Start, even warm-cache** — `verifyCu
 - `download.go:20` — `http.Client{Timeout: 10min}` caps the *entire body transfer*; a ~300 MB archive on a slow link can never complete and every retry restarts from zero. Consider a per-request context with progress-based deadline instead.
 - `clickhouse.go:184` / `cluster.go:142` — `Logger(nil)` silences download logs (`logf` no-ops) but substitutes `os.Stdout` for the *server process* output — the explicit nil logger re-enables the noisiest stream.
 - `cluster.go:261` — `Nodes()` returns the live internal slice (no copy); callers can corrupt cluster state through it.
-- `gitlab_integration_test.go:49` — `requestedPath` written in the httptest handler goroutine, read/reset by the test goroutine without synchronization; may trip `go test -race` intermittently.
+- ~~`gitlab_integration_test.go:49` — `requestedPath` written in the httptest handler goroutine, read/reset by the test goroutine without synchronization; may trip `go test -race` intermittently.~~ *(withdrawn: file does not exist, see status)*
 
 ## Suggested resolution order
 
-1. **Item 1 + C1 together** (process-exit monitoring + shared node core) — biggest payoff; absorbs/shrinks 6, 9, 13, 14.
-2. **Items 2, 3, 7** (cache locking + keying) — one coherent "cache integrity" PR.
-3. **Items 4, 5, 12** (verification policy, credential redaction, size caps) — one "download security" PR.
+Original order (struck-through steps are done):
+
+1. **Item 1** ✅ (#37). **C1** (shared node core) remains, and it now has to fold in the new
+   `process`/`waitForReadyOrExit` plumbing too. It absorbs items 9, 13 and 14.
+2. ~~**Items 2, 3**~~ ✅ (#38). **Item 7** (cache key includes repo URL) remains and is small.
+   The key now also names the `.lock` sidecar, so changing it changes the lock path too.
+3. ~~**Items 4, 5**~~ ✅ (#35). **Item 12** (size caps) remains.
 4. **Item 8** (`resolveConfig` validation) — small, high-leverage UX fix.
 5. **Items 10, 11** (Windows build tags, logger wrapping) — independent, mechanical.
 6. Remaining P3 + cleanup items opportunistically.
+
+Suggested next PRs, in order: **(a)** 9 + 13 + 14 + 18-single-node (small lifecycle
+correctness fixes, each locally testable without ClickHouse); **(b)** 7 + 12 + 15
+(cache/extract hardening); **(c)** 8; **(d)** 10 + 11; **(e)** C1–C6.
