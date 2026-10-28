@@ -153,7 +153,12 @@ func TestCluster_StopIsConcurrent(t *testing.T) {
 		stopTimeout = time.Second
 	)
 
-	cl := launchFakeCluster(t, writeStubbornBinary(t), replicas, DefaultConfig().StopTimeout(stopTimeout))
+	fake := writeStubbornBinary(t)
+	cl := launchFakeCluster(t, fake, replicas, DefaultConfig().StopTimeout(stopTimeout))
+
+	for _, n := range cl.nodes {
+		waitIgnoringTerm(t, fake, n.node.proc)
+	}
 
 	start := time.Now()
 	err := cl.Stop()

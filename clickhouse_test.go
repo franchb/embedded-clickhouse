@@ -301,10 +301,29 @@ func writeSleepingBinary(t *testing.T) string {
 
 // writeStubbornBinary writes a fake server that ignores SIGTERM, so stopping it always
 // runs into the StopTimeout. Ignored dispositions survive exec, so sleep ignores it too.
+// A SIGTERM that arrives before the trap is set still kills the shell, so each process
+// then creates "ignoring-term.<pid>" next to the script; see waitIgnoringTerm.
 func writeStubbornBinary(t *testing.T) string {
 	t.Helper()
 
-	return writeScriptBinary(t, "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n")
+	return writeScriptBinary(t,
+		"#!/bin/sh\ntrap '' TERM\n: > \"$(dirname \"$0\")/ignoring-term.$$\"\nexec sleep 300\n")
+}
+
+// waitIgnoringTerm blocks until every fake process started from the writeStubbornBinary
+// script at binPath has set its SIGTERM trap.
+func waitIgnoringTerm(t *testing.T, binPath string, procs ...*process) {
+	t.Helper()
+
+	for _, p := range procs {
+		marker := filepath.Join(filepath.Dir(binPath), fmt.Sprintf("ignoring-term.%d", p.cmd.Process.Pid))
+
+		require.Eventually(t, func() bool {
+			_, err := os.Stat(marker)
+
+			return err == nil
+		}, 10*time.Second, 10*time.Millisecond, "fake process never set its SIGTERM trap")
+	}
 }
 
 func writeScriptBinary(t *testing.T, script string) string {
