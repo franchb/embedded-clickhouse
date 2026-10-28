@@ -46,3 +46,9 @@ func customCachedBinaryPath(cacheDir, hashInput string) string {
 
 	return filepath.Join(cacheDir, "custom-"+key)
 }
+
+// lockPathFor returns the sidecar advisory-lock file path for a cached binary path.
+// The lock file lives next to the binary so it shares the same (already created) directory.
+func lockPathFor(binPath string) string {
+	return binPath + ".lock"
+}

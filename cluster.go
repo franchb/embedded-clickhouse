@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,12 @@ var ErrKeeperNotReady = errors.New("embedded-clickhouse: keeper quorum not ready
 
 // ErrNodeOutOfRange is returned when Node() is called with an index outside [0, replicas).
 var ErrNodeOutOfRange = errors.New("embedded-clickhouse: node index out of range")
+
+// ErrClusterUnsupportedOption is returned by Cluster.Start when the config sets a data
+// path or explicit port; in cluster mode these are auto-managed and cannot be honored.
+var ErrClusterUnsupportedOption = errors.New(
+	"embedded-clickhouse: ports and data path are auto-managed in cluster mode",
+)
 
 // Cluster manages a multi-replica ClickHouse cluster using embedded Keeper for coordination.
 // All replicas run on localhost with auto-allocated ports. The cluster presents a single
@@ -87,7 +94,7 @@ func NewClusterForTest(tb testing.TB, replicas int, config ...Config) *Cluster {
 }
 
 // Start launches all cluster nodes and waits for Keeper quorum.
-func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
+func (c *Cluster) Start() error { //nolint:funlen,cyclop // multi-phase orchestrator with config-guard branches
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -99,10 +106,18 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 		return fmt.Errorf("%w: got %d", ErrInvalidReplicaCount, c.replicas)
 	}
 
+	// Cluster mode auto-allocates all ports and uses temp data dirs per node. The
+	// single-node DataPath/TCPPort/HTTPPort options cannot be honored here (a node
+	// needs five ports, and Stop assumes ephemeral temp dirs), so reject them rather
+	// than silently ignore them.
+	if c.config.dataPath != "" || c.config.tcpPort != 0 || c.config.httpPort != 0 {
+		return ErrClusterUnsupportedOption
+	}
+
 	cleanups := make([]func(), 0)
 	cleanup := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, fn := range slices.Backward(cleanups) {
+			fn()
 		}
 	}
 
@@ -156,19 +171,19 @@ func (c *Cluster) Start() error { //nolint:funlen // multi-phase orchestrator
 			return cfgErr
 		}
 
-		cmd, startErr := startProcess(binPath, configPath, logger)
+		proc, startErr := startProcess(binPath, configPath, logger)
 		if startErr != nil {
 			return fmt.Errorf("embedded-clickhouse: start node %d: %w", i, startErr)
 		}
 
 		cleanups = append(cleanups, func() {
-			stopProcess(cmd, c.config.stopTimeout) //nolint:errcheck
+			stopProcess(proc, c.config.stopTimeout) //nolint:errcheck
 		})
 
 		nodes[i] = &EmbeddedClickHouse{
 			config:          c.config,
 			started:         true,
-			cmd:             cmd,
+			proc:            proc,
 			tmpDir:          tmpDir,
 			tcpPort:         ports[i].TCP,
 			httpPort:        ports[i].HTTP,
@@ -211,12 +226,10 @@ func (c *Cluster) Stop() error {
 	var errs []error
 
 	// Stop in reverse order.
-	for i := len(c.nodes) - 1; i >= 0; i-- {
-		node := c.nodes[i]
-
+	for i, node := range slices.Backward(c.nodes) {
 		node.mu.Lock()
 
-		if err := stopProcess(node.cmd, c.config.stopTimeout); err != nil {
+		if err := stopProcess(node.proc, c.config.stopTimeout); err != nil {
 			errs = append(errs, fmt.Errorf("node %d: %w", i, err))
 		}
 
@@ -227,7 +240,7 @@ func (c *Cluster) Stop() error {
 		}
 
 		node.started = false
-		node.cmd = nil
+		node.proc = nil
 		node.mu.Unlock()
 	}
 
@@ -271,58 +284,56 @@ func (c *Cluster) ClusterName() string {
 	return "test_cluster"
 }
 
-// allocateClusterNodePorts allocates the 5 ports needed for a single cluster node.
+// portsPerClusterNode is the number of distinct ports each cluster node needs:
+// TCP, HTTP, interserver, Keeper, and Keeper Raft.
+const portsPerClusterNode = 5
+
+// allocateClusterNodePorts allocates the distinct ports needed for a single
+// cluster node. The ports must not collide with one another, so they are
+// allocated as a batch with allocatePorts (which holds all listeners open at
+// once); allocating them via separate allocatePort calls could hand back the
+// same just-freed ephemeral port twice.
 func allocateClusterNodePorts() (clusterNodePorts, error) {
-	tcp, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	httpPort, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	interserver, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	keeper, err := allocatePort()
-	if err != nil {
-		return clusterNodePorts{}, err
-	}
-
-	keeperRaft, err := allocatePort()
+	ports, err := allocatePorts(portsPerClusterNode)
 	if err != nil {
 		return clusterNodePorts{}, err
 	}
 
 	return clusterNodePorts{
-		TCP:         tcp,
-		HTTP:        httpPort,
-		Interserver: interserver,
-		Keeper:      keeper,
-		KeeperRaft:  keeperRaft,
+		TCP:         ports[0],
+		HTTP:        ports[1],
+		Interserver: ports[2],
+		Keeper:      ports[3],
+		KeeperRaft:  ports[4],
 	}, nil
 }
 
 // waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.
+// If any node's process exits (or otherwise fails) during startup, the first error
+// cancels the shared context so the remaining nodes stop polling immediately instead
+// of burning the full start timeout. Cancellation is triggered only after a real error
+// is recorded, so the genuine failure (e.g. ErrServerExited) is the first error enqueued
+// and is what gets returned — never a sibling's "context canceled" artifact.
 // Returns the first error reported by any node, or nil if all are ready.
 func waitForAllNodesReady(ctx context.Context, nodes []*EmbeddedClickHouse) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	readyErrs := make(chan error, len(nodes))
 
 	var wg sync.WaitGroup
 	for i, node := range nodes {
 		wg.Add(1)
 
-		go func(i int, port uint32) {
+		go func(i int, port uint32, p *process) {
 			defer wg.Done()
 
-			if err := waitForReady(ctx, port); err != nil {
+			if err := waitForReadyOrExit(ctx, port, p); err != nil {
 				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
+
+				cancel() // stop sibling waits as soon as one node fails
 			}
-		}(i, node.httpPort)
+		}(i, node.httpPort, node.proc)
 	}
 
 	wg.Wait()

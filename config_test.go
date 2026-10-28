@@ -126,6 +126,25 @@ func TestConfigBuilderChaining_CustomAssets(t *testing.T) {
 	}
 }
 
+func TestConfigAllowMissingChecksum(t *testing.T) {
+	t.Parallel()
+
+	base := DefaultConfig()
+	if base.allowMissingChecksum {
+		t.Error("default allowMissingChecksum should be false (strict)")
+	}
+
+	enabled := base.AllowMissingChecksum(true)
+	if !enabled.allowMissingChecksum {
+		t.Error("AllowMissingChecksum(true) should set the field")
+	}
+
+	// Immutability: the builder must not mutate the receiver.
+	if base.allowMissingChecksum {
+		t.Error("base config was mutated by AllowMissingChecksum")
+	}
+}
+
 func TestConfigBuilderImmutability(t *testing.T) {
 	t.Parallel()
 

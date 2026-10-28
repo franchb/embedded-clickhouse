@@ -12,8 +12,8 @@ func TestResolveAsset_Linux(t *testing.T) {
 		arch     string
 		wantFile string
 	}{
-		{"amd64", "clickhouse-common-static-25.8.16.34-amd64.tgz"},
-		{"arm64", "clickhouse-common-static-25.8.16.34-arm64.tgz"},
+		{archAMD64, "clickhouse-common-static-25.8.16.34-amd64.tgz"},
+		{archARM64, "clickhouse-common-static-25.8.16.34-arm64.tgz"},
 	}
 	for _, tt := range tests {
 		t.Run("linux/"+tt.arch, func(t *testing.T) {
@@ -42,8 +42,8 @@ func TestResolveAsset_Darwin(t *testing.T) {
 		arch     string
 		wantFile string
 	}{
-		{"amd64", "clickhouse-macos"},
-		{"arm64", "clickhouse-macos-aarch64"},
+		{archAMD64, assetMacOS},
+		{archARM64, assetMacOSAARCH64},
 	}
 	for _, tt := range tests {
 		t.Run("darwin/"+tt.arch, func(t *testing.T) {
@@ -73,10 +73,10 @@ func TestResolveAsset_Unsupported(t *testing.T) {
 		goos string
 		arch string
 	}{
-		{"windows", "windows", "amd64"},
+		{"windows", "windows", archAMD64},
 		{"linux/386", "linux", "386"},
 		{"darwin/386", "darwin", "386"},
-		{"freebsd", "freebsd", "amd64"},
+		{"freebsd", "freebsd", archAMD64},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,7 +131,7 @@ func TestDownloadURL(t *testing.T) {
 func TestDownloadURL_CustomBase(t *testing.T) {
 	t.Parallel()
 
-	asset := platformAsset{filename: "clickhouse-macos-aarch64", assetType: assetRawBinary}
+	asset := platformAsset{filename: assetMacOSAARCH64, assetType: assetRawBinary}
 
 	got := downloadURL("https://mirror.example.com/releases", V25_3, asset)
 
@@ -157,7 +157,7 @@ func TestSHA512URL(t *testing.T) {
 func TestSHA512URL_Darwin(t *testing.T) {
 	t.Parallel()
 
-	asset := platformAsset{filename: "clickhouse-macos-aarch64", assetType: assetRawBinary}
+	asset := platformAsset{filename: assetMacOSAARCH64, assetType: assetRawBinary}
 
 	got := sha512URL("", V25_8, asset)
 

@@ -76,12 +76,13 @@ func writeExecutable(r io.Reader, destPath string) error {
 		return fmt.Errorf("embedded-clickhouse: create directory: %w", err)
 	}
 
-	tmp := destPath + ".tmp"
-
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	// Unique temp name so concurrent writers never truncate each other's in-flight file.
+	out, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: create temp file: %w", err)
 	}
+
+	tmp := out.Name()
 
 	if _, err := io.Copy(out, r); err != nil {
 		out.Close()
@@ -93,6 +94,13 @@ func writeExecutable(r io.Reader, destPath string) error {
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("embedded-clickhouse: close temp file: %w", err)
+	}
+
+	// os.CreateTemp creates the file with 0600; restore the executable bit before the
+	// atomic rename so the cached binary is runnable (load-bearing: tests assert this).
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("embedded-clickhouse: chmod temp file: %w", err)
 	}
 
 	if err := os.Rename(tmp, destPath); err != nil {

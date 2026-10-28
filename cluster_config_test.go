@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const testKeyMaxServerMemoryUsage = "max_server_memory_usage"
+
 func threeNodeTopology() clusterTopology {
 	ports := []clusterNodePorts{
 		{TCP: 19000, HTTP: 18123, Interserver: 19009, Keeper: 19181, KeeperRaft: 19234},
@@ -151,11 +153,11 @@ func TestBuildClusterTopology_UserSettings(t *testing.T) {
 	topo := buildClusterTopology([]clusterNodePorts{
 		{TCP: 1, HTTP: 2, Interserver: 3, Keeper: 4, KeeperRaft: 5},
 	}, map[string]string{
-		"max_server_memory_usage": "2147483648",
+		testKeyMaxServerMemoryUsage: "2147483648",
 	})
 
-	if topo.Settings["max_server_memory_usage"] != "2147483648" {
-		t.Errorf("expected user setting, got %s", topo.Settings["max_server_memory_usage"])
+	if topo.Settings[testKeyMaxServerMemoryUsage] != "2147483648" {
+		t.Errorf("expected user setting, got %s", topo.Settings[testKeyMaxServerMemoryUsage])
 	}
 }
 
@@ -165,9 +167,9 @@ func TestWriteClusterNodeConfig_SettingsSortedDeterministically(t *testing.T) {
 	topo := buildClusterTopology(
 		[]clusterNodePorts{{TCP: 1, HTTP: 2, Interserver: 3, Keeper: 4, KeeperRaft: 5}},
 		map[string]string{
-			"max_memory_usage":        "1000000000",
-			"allow_introspection":     "1",
-			"max_server_memory_usage": "2147483648",
+			"max_memory_usage":          "1000000000",
+			"allow_introspection":       "1",
+			testKeyMaxServerMemoryUsage: "2147483648",
 		},
 	)
 	dir := t.TempDir()

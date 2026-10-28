@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -58,6 +59,64 @@ func TestSentinelErrors(t *testing.T) {
 	require.EqualError(t, ErrServerNotStarted, "embedded-clickhouse: server has not been started")
 	require.EqualError(t, ErrServerAlreadyStarted, "embedded-clickhouse: server is already started")
 	require.EqualError(t, ErrUnsupportedPlatform, "embedded-clickhouse: unsupported platform")
+}
+
+// TestStart_ChildDiesImmediately proves that when the server process exits during
+// startup, Start fails fast with ErrServerExited instead of burning the whole
+// StartTimeout, and that the cleanup path (which calls stopProcess on the already-dead
+// process) returns promptly without deadlocking on the single-shot Wait.
+func TestStart_ChildDiesImmediately(t *testing.T) {
+	t.Parallel()
+
+	fake := writeFakeBinary(t, 3)
+
+	// Hold a listener answering non-200 on /ping and pin HTTPPort to it, so the
+	// readiness probe deterministically fails (the fake binary never binds a port)
+	// and no sibling t.Parallel() test can be assigned the port and answer 200.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	httpPort := uint32(l.Addr().(*net.TCPAddr).Port)
+
+	srv := &http.Server{Handler: mux}
+
+	go srv.Serve(l)
+	defer srv.Close()
+
+	s := NewServer(
+		DefaultConfig().
+			BinaryPath(fake).
+			Logger(io.Discard).
+			HTTPPort(httpPort).
+			StartTimeout(5 * time.Second),
+	)
+
+	done := make(chan error, 1)
+
+	start := time.Now()
+
+	go func() {
+		done <- s.Start()
+	}()
+
+	select {
+	case err = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return; stopProcess likely deadlocked on a second Wait")
+	}
+
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, ErrServerExited)
+	assert.Less(t, elapsed, 2*time.Second, "Start should fail fast, not burn the StartTimeout")
+
+	// The server never became ready, so an explicit Stop reports not-started.
+	assert.ErrorIs(t, s.Stop(), ErrServerNotStarted)
 }
 
 // --- Integration tests (skipped in short mode) ---

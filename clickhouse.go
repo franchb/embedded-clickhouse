@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -37,6 +37,10 @@ var ErrSHA512Mismatch = errors.New("embedded-clickhouse: SHA512 mismatch")
 // ErrSHA512NotFound is returned when the SHA512 checksum file does not contain a hash for the expected filename.
 var ErrSHA512NotFound = errors.New("embedded-clickhouse: SHA512 hash not found")
 
+// ErrSHA512Unavailable is returned when the SHA512 checksum file cannot be fetched (non-200)
+// and AllowMissingChecksum has not been enabled.
+var ErrSHA512Unavailable = errors.New("embedded-clickhouse: SHA512 checksum unavailable")
+
 // ErrBinaryNotFound is returned when the ClickHouse binary cannot be located inside a downloaded archive.
 var ErrBinaryNotFound = errors.New("embedded-clickhouse: binary not found in archive")
 
@@ -55,13 +59,19 @@ var ErrInvalidSettingKey = errors.New("embedded-clickhouse: invalid setting key"
 // ErrClusterManaged is returned when Start or Stop is called on a node owned by a Cluster.
 var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cluster; use Cluster.Start/Stop")
 
+// ErrServerExited is returned when the ClickHouse process exits during startup before becoming ready.
+var ErrServerExited = errors.New("embedded-clickhouse: server process exited during startup")
+
+// ErrLockingUnsupported is returned when cross-process file locking is not supported on the current platform.
+var ErrLockingUnsupported = errors.New("embedded-clickhouse: file locking not supported on this platform")
+
 // EmbeddedClickHouse manages a ClickHouse server process for testing.
 type EmbeddedClickHouse struct {
 	config Config
 
 	mu      sync.RWMutex
 	started bool
-	cmd     *exec.Cmd
+	proc    *process
 	tmpDir  string
 
 	tcpPort         uint32
@@ -120,8 +130,8 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 
 	cleanups := make([]func(), 0)
 	cleanup := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, fn := range slices.Backward(cleanups) {
+			fn()
 		}
 	}
 
@@ -140,6 +150,12 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 	}
 
 	// Allocate ports.
+	//
+	// Known limitation: these two allocatePort calls share the flaw fixed for
+	// clusters (see allocatePorts) — allocating sequentially can hand back the
+	// same just-freed ephemeral port, so tcpPort could equal httpPort. The risk
+	// is far smaller here (two ports, and either may be pre-set from config), so
+	// it is intentionally left out of the cluster fix.
 	tcpPort := e.config.tcpPort
 	if tcpPort == 0 {
 		tcpPort, err = allocatePort()
@@ -185,24 +201,24 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 		logger = os.Stdout
 	}
 
-	cmd, err := startProcess(binPath, configPath, logger)
+	proc, err := startProcess(binPath, configPath, logger)
 	if err != nil {
 		return err
 	}
 
 	cleanups = append(cleanups, func() {
-		stopProcess(cmd, e.config.stopTimeout) //nolint:errcheck
+		stopProcess(proc, e.config.stopTimeout) //nolint:errcheck
 	})
 
-	// Wait for server to be ready.
+	// Wait for server to be ready, or abort early if the process exits.
 	ctx, cancel := context.WithTimeout(context.Background(), e.config.startTimeout)
 	defer cancel()
 
-	if err := waitForReady(ctx, httpPort); err != nil {
+	if err := waitForReadyOrExit(ctx, httpPort, proc); err != nil {
 		return err
 	}
 
-	e.cmd = cmd
+	e.proc = proc
 	e.tmpDir = tmpDir
 	e.tcpPort = tcpPort
 	e.httpPort = httpPort
@@ -227,7 +243,7 @@ func (e *EmbeddedClickHouse) Stop() error {
 
 	var errs []error
 
-	if err := stopProcess(e.cmd, e.config.stopTimeout); err != nil {
+	if err := stopProcess(e.proc, e.config.stopTimeout); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -239,7 +255,7 @@ func (e *EmbeddedClickHouse) Stop() error {
 	}
 
 	e.started = false
-	e.cmd = nil
+	e.proc = nil
 	e.tcpPort = 0
 	e.httpPort = 0
 
