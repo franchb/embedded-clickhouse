@@ -9,47 +9,55 @@ findings below were CONFIRMED or PLAUSIBLE; zero REFUTED** (several verified emp
 via cross-compile and `go run`). The 4 lower-confidence extras were surfaced but not
 individually verified.
 
-Each item below is self-contained: mechanism, trigger, and suggested fix. Check off as
-resolved. Line numbers in the item bodies are valid at commit `dba7511` (kept as the
-historical record); current locations for open items are in the status table below.
+Each item below is self-contained: mechanism, trigger, and suggested fix. All items are checked
+off. Line numbers in the item bodies are valid at commit `dba7511` and are kept as the
+historical record.
 
-## Status @ `1cc4b25` (main, 2026-10-28)
+## Status: all findings resolved
 
-Each item was re-checked against the current `main`; open items were re-located. Resolved:
-6 of 24 · partially resolved: 1 · open: 17. `GOOS=windows go build ./...` re-run: still fails.
+Items 1–6 and the cluster half of 18 were fixed on `main` (#34–#39). Everything else is
+fixed in this PR, which is based on `main` @ `1cc4b25`. Each fix commit is listed below and
+carries tests. For example, the zero-`StopTimeout` regression test was confirmed to fail
+without its fix, and `GOOS=windows go build ./...` failed before `c3ffdf0`. The full suite,
+including the integration tests against a real ClickHouse server and 3-node cluster,
+passes on the final commit.
 
-| # | Status | Resolved by / current location |
-|---|--------|--------------------------------|
-| 1 | ✅ fixed | #37 (`6b25099`): `waitForReadyOrExit` (`health.go:57`), single Wait goroutine (`process.go`) |
-| 2 | ✅ fixed | #38 (`933a6f8`): `flock` sidecar (`filelock_unix.go`), `os.CreateTemp` + rename |
-| 3 | ✅ fixed | #38 (`933a6f8`): `ensureCustomArchiveFromPath` takes the same lock and re-stats |
-| 4 | ✅ fixed | #35 (`97d2956`): fail closed (`ErrSHA512Unavailable`), `AllowMissingChecksum` opt-out, lenient `parseSHA512` |
-| 5 | ✅ fixed (redaction) | #35 (`97d2956`): `redactURL`/`redactURLError`. The auth-header option is still missing; credentials still travel in the URL |
-| 6 | ✅ fixed (reject) | #34 (`586c7cb`): `ErrClusterUnsupportedOption` (`cluster.go:112`) |
-| 7 | open | `cache.go:35` (key still version+GOOS+GOARCH), `download.go:179` |
-| 8 | open | `clickhouse.go:87` (no validation), `clickhouse.go:214` (zero timeout), `process.go:142`, `config.go` port setters; `startTimeoutSet` sentinel still present |
-| 9 | open | `process.go:171` (`ExitCode() == -1` still treated as clean) |
-| 10 | open | `process.go:95,129,139,152`. Note: #38 already split file locking into `filelock_unix.go` (`!windows`) and a `filelock_other.go` (`windows`) stub, so only `process.go` blocks a Windows build |
-| 11 | open | `cluster.go:156-174` (one writer shared by all nodes) |
-| 12 | open | `extract.go:87`, `download.go:319` (unbounded `io.Copy`) |
-| 13 | open | `clickhouse.go:109`, `cluster.go:87` |
-| 14 | open | `cluster.go:242` (only `started`/`proc` reset; ports and `clusterManaged` remain) |
-| 15 | open | `extract.go:71` |
-| 16 | open | `server_config.go:74,103`, `cluster_config.go:190` |
-| 17 | open | `clickhouse.go:266-295` |
-| 18 | ◐ partial | #39 (`cd20eef`): cluster uses `allocatePorts` (held listeners). Single-node is still sequential, documented at `clickhouse.go:154` |
-| C1 | open | `cluster.go:184-194` still writes private node fields; dead `interserverPort`/`keeperPort`/`keeperRaftPort` remain |
-| C2 | open | `cluster.go:376` ≡ `health.go:117`. Also, `waitForReady` (`health.go:17`) now has only test callers |
-| C3 | open | `server_config.go:101` vs `cluster_config.go:184` |
-| C4 | open | `download.go:67,364,433,477` |
-| C5 | open | `clickhouse.go:120,233`, `cluster.go:98,219` |
-| C6 | open | `cluster.go:229` (sequential reverse-order stop) |
+| # | Status | Resolved by |
+|---|--------|-------------|
+| 1 | ✅ | #37 (`6b25099`): `waitForReadyOrExit`, single Wait goroutine |
+| 2 | ✅ | #38 (`933a6f8`): `flock` sidecar (`filelock_unix.go`), `os.CreateTemp` + rename |
+| 3 | ✅ | #38 (`933a6f8`): `ensureCustomArchiveFromPath` takes the same lock and re-stats |
+| 4 | ✅ | #35 (`97d2956`): fail closed (`ErrSHA512Unavailable`), `AllowMissingChecksum`, lenient `parseSHA512` |
+| 5 | ✅ | #35 (`97d2956`): URL redaction. `df65d63` adds `DownloadHeader`, so private-mirror credentials no longer have to ride in the URL |
+| 6 | ✅ | #34 (`586c7cb`): `ErrClusterUnsupportedOption` |
+| 7 | ✅ | `df65d63`: `cachedBinaryPath` suffixes a digest of a custom `BinaryRepositoryURL`. The default source keeps its old name |
+| 8 | ✅ | `c0110bf`: `Config.resolve` runs before any download (`ErrInvalidConfig`); 0 timeouts mean default; `startTimeoutSet` removed. `ee66995`: `Stop` uses the resolved `StopTimeout` too |
+| 9 | ✅ | `c3ffdf0`: `classifyWaitErr` inspects `syscall.WaitStatus`; only exit 0, SIGTERM, or status 143 is clean |
+| 10 | ✅ | `c3ffdf0`: `process_unix.go` / `process_windows.go` stub; CI vets `windows`, `darwin`, `freebsd` |
+| 11 | ✅ | `c3ffdf0`: `sharedOutput` mutex-wraps non-`*os.File` writers shared by cluster nodes |
+| 12 | ✅ | `df65d63`: 4 GiB download cap (Content-Length + streaming), 1 MiB checksum cap, 4 GiB extracted-binary cap (`hdr.Size`) |
+| 13 | ✅ | `6246d74`: `*ForTest` cleanups ignore `ErrServerNotStarted` / `ErrClusterNotStarted` |
+| 14 | ✅ | `6246d74`: `node.teardown` zeroes ports; stale handles report `""`. `ErrClusterManaged` on a stale handle is kept on purpose: restarting creates new nodes |
+| 15 | ✅ | `df65d63`: reject `..` path *segments* before `Clean`; `cacheDir` makes `CachePath` absolute |
+| 16 | ✅ | `c0110bf`: `validateSettings` rejects template-managed element names (single and cluster lists) |
+| 17 | ✅ | `6246d74`: accessors return `""` while not running; new `Started()` (non-breaking alternative to an error return) |
+| 18 | ✅ | #39 (`cd20eef`) for clusters; `6246d74` for single-node: one `allocatePorts` batch plus a spare, avoiding a user-fixed port |
+| C1 | ✅ | `6246d74`: `launchNode` / `node.teardown` shared by both lifecycles; dead port fields removed. `clusterManaged` is kept, because it is the contract behind `ErrClusterManaged` |
+| C2 | ✅ | `6685738`: `pollUntil` + `ping` serve both server and Keeper readiness; `keeperReady` and test-only `waitForReady` deleted |
+| C3 | ✅ | `c0110bf`: shared `validateSettings` / `makeDirs` / `writeConfigFile` (removes partial files) and one shared template fragment; empty `mergeSettings` deleted |
+| C4 | ✅ | `df65d63`: SHA256+SHA512 in one pass, computed while downloading; a local archive is read once instead of three times |
+| C5 | ✅ | `6246d74`: `startGate`, so the lock is not held across Start; `Stop` aborts an in-flight Start; `StartContext` on both types |
+| C6 | ✅ | `6246d74`: `Cluster.Stop` tears nodes down concurrently |
 
-Lower-confidence extras: the HTTP timeout (`download.go:19`), `Logger(nil)` → stdout
-(`clickhouse.go`, `cluster.go:156`) and `Nodes()` returning the live slice (`cluster.go:270`)
-are unchanged. **The `gitlab_integration_test.go` extra is withdrawn**: that file has never
-existed in this repository's history (`git log --all -- gitlab_integration_test.go` is
-empty), and the same file was cited as evidence in item 5.
+Lower-confidence extras:
+
+- HTTP timeout ✅ `df65d63`: a 2-minute stall timer, re-armed on every read, replaces the
+  10-minute whole-request timeout.
+- `Logger(nil)` → stdout ✅ `c3ffdf0`: nil now silences server output too.
+- `Nodes()` returns the live slice ✅ `6246d74`: it now returns a copy.
+- `gitlab_integration_test.go` race: **withdrawn**. That file has never existed in this
+  repository's history (`git log --all -- gitlab_integration_test.go` is empty), and the same
+  file was wrongly cited as evidence in item 5.
 
 ---
 
@@ -92,32 +100,32 @@ empty), and the same file was cited as evidence in item 5.
 
 ## P2 — High-impact correctness
 
-### [ ] 7. Standard-binary cache key omits the repository URL
+### [x] 7. Standard-binary cache key omits the repository URL
 **Where:** `cache.go:35-38` (key = version+GOOS+GOARCH), contrast `download.go:90-91` (custom key = URL+digests); stat-hit at `download.go:138-141` before the URL is ever consulted (line 157)
 **Bug:** A binary fetched from mirror A (possibly unverified, see item 4) is silently served forever for all configs, including the default GitHub repo. Switching mirrors never re-downloads.
 **Fix:** include a digest of `binaryRepositoryURL` in `cachedBinaryPath`.
 
-### [ ] 8. `Config` is never validated or defaulted at use
+### [x] 8. `Config` is never validated or defaulted at use
 **Where:** `clickhouse.go:77-86` (`NewServer` stores cfg verbatim), `clickhouse.go:198` (`context.WithTimeout(…, 0)` born expired; only `NewCluster` backfills via `startTimeoutSet`, `cluster.go:59-61`), `process.go:75` (`time.After(0)` → instant SIGKILL + `ErrStopTimeout`), `platform.go:89-91` (version `""` → empty URL → `unsupported protocol scheme`), `config.go:66-76` (port setters store raw `uint32`; no ≤65535 or tcp≠http check; straight into XML via `server_config.go:21-22`)
 **Bug:** `Config{}.TCPPort(9000)` compiles naturally (builder methods chain off any value) and fails opaquely — after a full ~300 MB download.
 **Fix:** one `resolveConfig()` at Start: zero-means-default for timeouts (kills the `startTimeoutSet` sentinel), explicit `version must not be empty` error, port range/conflict validation. Fail before downloading.
 
-### [ ] 9. Crashed server reported as clean stop (`ExitCode() == -1`)
+### [x] 9. Crashed server reported as clean stop (`ExitCode() == -1`)
 **Where:** `process.go:84-89` (`if exitErr.ExitCode() == -1 || exitErr.ExitCode() == 143 { return nil }`)
 **Bug:** In `os/exec`, `-1` means killed by **any** signal. A child that crashed (SIGSEGV/SIGABRT) or was OOM-killed before `Stop` is a zombie; `Getpgid` still succeeds, our SIGTERM is a no-op, `Wait` yields `-1`, and `Stop`/`tb.Cleanup` report success — the suite stays green despite a mid-test crash.
 **Fix:** inspect `exitErr.Sys().(syscall.WaitStatus)`: accept only `Signaled() && Signal() == SIGTERM` (and exit code 143) as clean.
 
-### [ ] 10. Package does not compile on Windows
+### [x] 10. Package does not compile on Windows
 **Where:** `process.go:45,61,66,77` (`syscall.SysProcAttr{Setpgid}`, `syscall.Getpgid`, `syscall.Kill`) — no build tags anywhere, no `process_windows.go`
 **Bug:** Verified: `GOOS=windows go build ./...` fails with 4 errors. Consumers that cross-build break at import time instead of getting the designed runtime `ErrUnsupportedPlatform` (`platform.go:64`).
 **Fix:** build-tagged `process_unix.go` / `process_windows.go` (stub returning `ErrUnsupportedPlatform`) behind a small start/stop seam.
 
-### [ ] 11. Data race: one logger shared as Stdout/Stderr of N node processes
+### [x] 11. Data race: one logger shared as Stdout/Stderr of N node processes
 **Where:** `cluster.go:141-144,159` (same writer instance per node), `process.go:42-43` (assigned raw)
 **Bug:** For any non-`*os.File` writer, `os/exec` spawns one pipe-copy goroutine per process; N goroutines `Write` concurrently to one unsynchronized writer (`bytes.Buffer`, `t.Logf` adapters…). Console logging is on (`cluster_config.go:14-17`), so output flows. `go test -race` fails. Single-node is safe only because exec dedupes identical Stdout/Stderr.
 **Fix:** wrap the user writer in a mutex-guarded writer (or per-node prefixed writers) before handing it to `exec.Cmd` in cluster mode.
 
-### [ ] 12. Unbounded decompression and download size (gzip bomb / disk fill)
+### [x] 12. Unbounded decompression and download size (gzip bomb / disk fill)
 **Where:** `extract.go:86` (`io.Copy` of tar entry; `hdr.Size` never checked), `download.go:253` (`io.Copy` of response body, no cap)
 **Bug:** A compromised mirror or attacker-controlled `CustomArchiveURL` (verification optional/fail-open, item 4) can fill the disk hosting the cache (typically `$HOME`), wedging CI.
 **Fix:** `io.LimitReader` with a sane ceiling (e.g. 4 GiB decompressed, configurable) on both paths; reject `hdr.Size` above the cap up front.
@@ -126,32 +134,32 @@ empty), and the same file was cited as evidence in item 5.
 
 ## P3 — Correctness, ergonomics & API contract
 
-### [ ] 13. `NewServerForTest` cleanup fails tests that call `Stop` themselves
+### [x] 13. `NewServerForTest` cleanup fails tests that call `Stop` themselves
 **Where:** `clickhouse.go:99-102` (Cleanup → `tb.Errorf` on any Stop error), `clickhouse.go:224-225` (`ErrServerNotStarted` when already stopped); same in `cluster.go:80-83` / `cluster.go:207-208` (`ErrClusterNotStarted`)
 **Bug:** A test that legitimately stops the server mid-test (e.g. to exercise app behavior after DB shutdown) goes red at teardown.
 **Fix:** in the Cleanup, ignore `errors.Is(err, ErrServerNotStarted)` / `ErrClusterNotStarted`.
 
-### [ ] 14. `Cluster.Stop` leaves stale, unrestartable node handles
+### [x] 14. `Cluster.Stop` leaves stale, unrestartable node handles
 **Where:** `cluster.go:229-230` (resets only `started`/`cmd`; ports untouched — contrast `clickhouse.go:241-244`), `cluster.go:178` (`clusterManaged: true`, never cleared), `cluster.go:253` (`Node` returns live pointers)
 **Bug:** A handle saved via `Node(i)` before Stop keeps returning the dead port from `TCPAddr()`/`DSN()` (OS may reassign it → queries silently hit a wrong server), and `Start()` on it returns `ErrClusterManaged` forever.
 **Fix:** zero port fields in `Cluster.Stop` (ideally by routing through a shared `stopNode`, see Cleanup 1).
 
-### [ ] 15. `".."` path guard false-positives valid paths, misses real traversal
+### [x] 15. `".."` path guard false-positives valid paths, misses real traversal
 **Where:** `extract.go:70-72` (`filepath.Clean` then `strings.Contains(destPath, "..")`)
 **Bug:** Verified empirically: `CachePath("/data/ci..runner/cache")` or relative `"../shared-cache"` → permanent `ErrInvalidPath`; meanwhile a genuine `/safe/dir/../escape` is *cleaned away* before the check and passes. The guard only harms legitimate paths.
 **Fix:** validate the *relationship* instead: resolve `destPath` and ensure it stays within the intended cache root (`filepath.Rel` + check the result doesn't start with `..`).
 
-### [ ] 16. User `Settings` can silently duplicate structural config elements
+### [x] 16. User `Settings` can silently duplicate structural config elements
 **Where:** `server_config.go:74` (`^[a-zA-Z][a-zA-Z0-9_]*$` accepts `tcp_port`, `path`, `users`, `logger`…), template line 21 vs settings range lines 49-51; same hole + more collidable keys in `cluster_config.go:103-104,189-195` (`keeper_server`, `zookeeper`, `remote_servers`, `macros`)
 **Bug:** `Settings{"tcp_port":"9100"}` emits a second top-level `<tcp_port>` — ClickHouse's resolution diverges from what `TCPAddr()`/`DSN()` report, with no error. (Value escaping is fine: `xmlEscape` is used.)
 **Fix:** denylist of template-managed element names in `validSettingKey`'s caller; return `ErrInvalidSettingKey`.
 
-### [ ] 17. Address accessors return `127.0.0.1:0` before Start / after Stop
+### [x] 17. Address accessors return `127.0.0.1:0` before Start / after Stop
 **Where:** `clickhouse.go:250-278` (`TCPAddr`/`HTTPAddr`/`DSN`/`HTTPURL` — no `started` check; docs state no precondition); `clickhouse.go:243-244` (Stop zeroes ports, making post-Stop calls equally silent)
 **Bug:** `NewServer().DSN()` yields a well-formed `clickhouse://127.0.0.1:0/default` that `sql.Open` accepts; failure surfaces later as an opaque dial error far from the ordering mistake.
 **Fix:** return `("", ErrServerNotStarted)` (breaking) or at minimum document the precondition and add a `Started()` accessor.
 
-### [ ] 18. `allocatePort` TOCTOU + no uniqueness across 5×N allocations *(PLAUSIBLE)*
+### [x] 18. `allocatePort` TOCTOU + no uniqueness across 5×N allocations *(PLAUSIBLE)*
 **Where:** `process.go:14-33` (bind :0, close, return; comment acknowledges the race), `cluster.go:275-301` (5 sequential calls per node, no dedup over the set)
 **Bug:** Kernel may hand a just-released port to a later allocation or a concurrent process; duplicate role/node ports → opaque 240 s cluster timeout. Linux bind(:0) randomization makes same-process duplicates rare but unguarded.
 **Fix:** track allocated ports in a set and re-allocate on duplicates; consider holding listeners open until just before spawn.
@@ -160,27 +168,27 @@ empty), and the same file was cited as evidence in item 5.
 
 ## P4 — Cleanup & design debt (all verified)
 
-### [ ] C1. Cluster duplicates the single-node lifecycle core
+### [x] C1. Cluster duplicates the single-node lifecycle core
 `Cluster.Start` re-implements temp-dir/config/spawn/rollback/readiness and fabricates nodes by writing private fields (`cluster.go:168-179`); `Cluster.Stop` duplicates `Stop`'s body inline (`cluster.go:217-231`); `EmbeddedClickHouse.Start/Stop` are fenced with `clusterManaged` guards (`clickhouse.go:113,220`). Divergence already shipped: items 6, 14. Dead write-only fields: `interserverPort`/`keeperPort`/`keeperRaftPort` (`clickhouse.go:69-71`, written `cluster.go:175-177`, never read).
 **Fix:** internal `startNode`/`stopNode` core shared by both paths; delete `clusterManaged` and the dead fields. *Resolving this absorbs items 6, 9, 13, 14 fixes naturally.*
 
-### [ ] C2. `keeperReady` is byte-identical to `ping`; poll loops duplicated
+### [x] C2. `keeperReady` is byte-identical to `ping`; poll loops duplicated
 `cluster.go:365-380` ≡ `health.go:41-56`; `waitForKeeperQuorum` re-implements `waitForReady`'s immediate-check-then-ticker loop. Only URL, interval, and error wrapping differ.
 **Fix:** one `pollUntilHTTP200(ctx, client, url, interval)` helper; callers keep their error wrapping.
 
-### [ ] C3. `writeClusterNodeConfig` duplicates `writeServerConfig` (already drifted)
+### [x] C3. `writeClusterNodeConfig` duplicates `writeServerConfig` (already drifted)
 Byte-identical validation error string (`server_config.go:104` / `cluster_config.go:191`), same MkdirAll loop, verbatim logger/users/profiles/quotas XML blocks. Drift: cluster removes a half-written config on template error (`cluster_config.go:248-253`), server leaks it (`server_config.go:136-139`). `buildClusterTopology` bypasses `mergeSettings` (`cluster_config.go:173-180`) — latent because `defaultServerSettings` is empty today (`server_config.go:58-60`; if it stays empty, delete it and `mergeSettings`).
 **Fix:** shared `validateSettings`/`makeServerDirs`/`writeConfigFile` helpers + a shared base template fragment.
 
-### [ ] C4. Redundant full-file hashing I/O
+### [x] C4. Redundant full-file hashing I/O
 Custom archives: up to **3 full reads per Start, even warm-cache** — `verifyCustomArchive` does separate SHA256/SHA512 passes (`download.go:339,350`), then `fileSHA256` again for the cache key (line 55); the `os.Stat(binPath)` fast path comes only at line 67, *after* hashing. Downloads: archive written then re-read entirely for SHA512 (`download.go:253` → `293`).
 **Fix:** single pass with `io.MultiWriter(sha256, sha512)`; hash during download via `io.TeeReader`. Note: stat-before-hash requires rethinking the content-addressed key for the local-path flow. Also dedupe `fileSHA256`/`fileSHA512` into one `fileDigest(path, hash.Hash)`.
 
-### [ ] C5. `Start` holds the write lock for its entire duration
+### [x] C5. `Start` holds the write lock for its entire duration
 `clickhouse.go:110-111`: `e.mu.Lock()` across download (minutes; 10-min HTTP timeout) + readiness wait. `Stop` needs the same lock (line 217) → a watchdog calling `Stop` deadlocks until Start finishes; accessors block too. No `context.Context` parameter on `Start` as an alternate abort path. Same shape in `Cluster.Start` (`cluster.go:91-92`, up to 240 s).
 **Fix:** lock only to check-and-set a `starting` flag and to publish results; and/or add `StartContext(ctx)`.
 
-### [ ] C6. `Cluster.Stop` is sequential — teardown is sum(), not max()
+### [x] C6. `Cluster.Stop` is sequential — teardown is sum(), not max()
 `cluster.go:213-232`: each `stopProcess` waits up to `stopTimeout` (default 10 s, `config.go:53`) before the next node is signalled; a hung 3-node cluster takes 30 s+. Start already waits for readiness in parallel (`cluster.go:310-326`). No semantic ordering requirement found (every node co-hosts a Keeper; sequential stop actually leaves the last node quorum-less anyway).
 **Fix:** SIGTERM all process groups first, then wait concurrently (`errgroup`/WaitGroup), joining errors.
 
