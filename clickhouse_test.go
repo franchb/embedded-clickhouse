@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ func TestEmbeddedClickHouse_Accessors(t *testing.T) {
 
 	s := &EmbeddedClickHouse{
 		started: true,
-		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, ports: nil, stopTimeout: 0},
+		node:    node{proc: nil, instanceID: "", dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, ports: nil, stopTimeout: 0},
 	}
 
 	assert.True(t, s.Started())
@@ -102,7 +103,7 @@ func TestStop_AbortsInFlightStart(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(
 		DefaultConfig().
@@ -168,11 +169,12 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 
 	rec := &recordingTB{TB: t, errs: nil, cleanups: nil}
 
+	fake := writeIdentifyingBinary(t)
+
 	s := NewServerForTest(rec, DefaultConfig().
-		BinaryPath(writeSleepingBinary(t)).
+		BinaryPath(fake).
 		Logger(io.Discard).
-		TCPPort(fakeTCPPort).
-		HTTPPort(serveProbe(t, http.StatusOK, fakeTCPPort)))
+		HTTPPort(serveInstanceOf(t, fake)))
 
 	require.NoError(t, s.Stop())
 
@@ -189,11 +191,12 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 func TestStop_ZeroStopTimeoutUsesDefault(t *testing.T) {
 	t.Parallel()
 
+	fake := writeIdentifyingBinary(t)
+
 	s := NewServer(DefaultConfig().
-		BinaryPath(writeSleepingBinary(t)).
+		BinaryPath(fake).
 		Logger(io.Discard).
-		TCPPort(fakeTCPPort).
-		HTTPPort(serveProbe(t, http.StatusOK, fakeTCPPort)).
+		HTTPPort(serveInstanceOf(t, fake)).
 		StopTimeout(0))
 
 	require.NoError(t, s.Start())
@@ -204,7 +207,7 @@ func TestStartContext_Canceled(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(DefaultConfig().BinaryPath(fake).Logger(io.Discard).HTTPPort(httpPort))
 
@@ -235,7 +238,7 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	// Hold a listener answering non-200 on /ping and pin HTTPPort to it, so the
 	// readiness probe deterministically fails (the fake binary never binds a port)
 	// and no sibling t.Parallel() test can be assigned the port and answer 200.
-	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(
 		DefaultConfig().
@@ -270,9 +273,46 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	assert.ErrorIs(t, s.Stop(), ErrServerNotStarted)
 }
 
-// fakeTCPPort is the native port fake-binary tests configure. The fake never binds it;
-// serveProbe reports it so the readiness probe accepts the stub as the node's server.
-const fakeTCPPort = 19000
+// writeIdentifyingBinary writes a fake server that stays alive until signalled, after
+// copying its instance ID from the config it was given into "instance" next to the
+// script. serveInstanceOf then answers the readiness probe the way the real server would.
+func writeIdentifyingBinary(t *testing.T) string {
+	t.Helper()
+
+	return writeScriptBinary(t, `#!/bin/sh
+sed -n 's|.*<embedded_clickhouse_instance>\(.*\)</embedded_clickhouse_instance>.*|\1|p' "${2#--config-file=}" \
+	> "$(dirname "$0")/instance.tmp" && mv "$(dirname "$0")/instance.tmp" "$(dirname "$0")/instance"
+exec sleep 300
+`)
+}
+
+// serveInstanceOf stands in for the HTTP interface of a writeIdentifyingBinary fake at
+// binPath: it reports the fake's instance ID once written, and 503 until then.
+func serveInstanceOf(t *testing.T, binPath string) uint32 {
+	t.Helper()
+
+	idPath := filepath.Join(filepath.Dir(binPath), "instance")
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		id, err := os.ReadFile(idPath)
+		if err != nil {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+
+		rw.Write(id)
+	})}
+
+	go srv.Serve(l)
+
+	t.Cleanup(func() { srv.Close() })
+
+	return uint32(l.Addr().(*net.TCPAddr).Port)
+}
 
 // writeSleepingBinary writes a fake server that stays alive until signalled.
 func writeSleepingBinary(t *testing.T) string {

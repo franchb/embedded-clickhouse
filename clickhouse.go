@@ -213,8 +213,8 @@ func launchServerNode(ctx context.Context, binPath string, cfg Config) (*node, e
 		httpPort:    httpPort,
 		ports:       []uint32{tcpPort, httpPort},
 		stopTimeout: cfg.stopTimeout,
-		writeConfig: func(dir string) (string, error) {
-			return writeServerConfig(dir, tcpPort, httpPort, cfg.settings)
+		writeConfig: func(dir, instanceID string) (string, error) {
+			return writeServerConfig(dir, instanceID, tcpPort, httpPort, cfg.settings)
 		},
 		output: processOutput(cfg.logger),
 	})

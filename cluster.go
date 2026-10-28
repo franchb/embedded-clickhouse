@@ -200,8 +200,8 @@ func launchCluster(ctx context.Context, binPath string, cfg Config, replicas int
 			httpPort:    ports[i].HTTP,
 			ports:       ports[i].all(),
 			stopTimeout: cfg.stopTimeout,
-			writeConfig: func(dir string) (string, error) {
-				return writeClusterNodeConfig(dir, i, topo)
+			writeConfig: func(dir, instanceID string) (string, error) {
+				return writeClusterNodeConfig(dir, instanceID, i, topo)
 			},
 			output: output,
 		})

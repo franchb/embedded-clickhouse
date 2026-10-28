@@ -2,6 +2,7 @@ package embeddedclickhouse
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 // down with node.teardown, so the two paths cannot drift apart.
 type node struct {
 	proc        *process
+	instanceID  string // per-launch token in the server config; see baseConfigData.InstanceID
 	dir         string // server working directory: config, data, logs
 	ownsDir     bool   // dir was created by launchNode and is removed by teardown
 	tcpPort     uint32
@@ -34,7 +36,7 @@ type nodeSpec struct {
 	httpPort    uint32
 	ports       []uint32 // every port the server listens on, including tcpPort and httpPort
 	stopTimeout time.Duration
-	writeConfig func(dir string) (string, error)
+	writeConfig func(dir, instanceID string) (string, error)
 	output      io.Writer
 }
 
@@ -43,6 +45,7 @@ type nodeSpec struct {
 func launchNode(spec nodeSpec) (*node, error) {
 	nd := &node{
 		proc:        nil,
+		instanceID:  rand.Text(),
 		dir:         "",
 		ownsDir:     false,
 		tcpPort:     spec.tcpPort,
@@ -66,7 +69,7 @@ func launchNode(spec nodeSpec) (*node, error) {
 		nd.dir, nd.ownsDir = dir, true
 	}
 
-	configPath, err := spec.writeConfig(nd.dir)
+	configPath, err := spec.writeConfig(nd.dir, nd.instanceID)
 	if err != nil {
 		_ = nd.removeDir()
 		return nil, err
@@ -97,6 +100,7 @@ func (n *node) teardown() error {
 	}
 
 	n.proc = nil
+	n.instanceID = ""
 	n.dir = ""
 	n.ownsDir = false
 	n.tcpPort = 0

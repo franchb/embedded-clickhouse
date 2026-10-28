@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,10 +43,16 @@ func pollUntil(ctx context.Context, interval time.Duration, wake <-chan struct{}
 	}
 }
 
+// networkErrorExitCode is ClickHouse's NETWORK_ERROR error code (src/Common/ErrorCodes.cpp).
+// The server exits with the code of the exception that stopped it, and a listener that
+// cannot bind stops startup with NETWORK_ERROR.
+const networkErrorExitCode = 210
+
 // exitError builds the startup error for a node whose process has exited. Call only
-// once nd.proc.done is closed (so nd.proc.waitErr is safe to read). If another process
-// now holds one of the node's ports, a failed bind is the likely reason the server
-// exited, so the error also matches ErrPortConflict.
+// once nd.proc.done is closed (so nd.proc.waitErr is safe to read). The error also
+// matches ErrPortConflict when the server failed to bind a port: either another process
+// now holds one of the node's ports, or the server exited with NETWORK_ERROR. The exit
+// code covers a holder that already released the port by the time the exit is seen.
 func exitError(nd *node) error {
 	err := ErrServerExited
 	if nd.proc.waitErr != nil {
@@ -54,6 +61,11 @@ func exitError(nd *node) error {
 
 	if port, taken := takenPort(nd.ports); taken {
 		return fmt.Errorf("%w: port %d is in use by another process: %w", ErrPortConflict, port, err)
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(nd.proc.waitErr, &exitErr) && exitErr.ExitCode() == networkErrorExitCode {
+		return fmt.Errorf("%w: the server could not bind a listener: %w", ErrPortConflict, err)
 	}
 
 	return err
@@ -80,9 +92,9 @@ func takenPort(ports []uint32) (uint32, bool) {
 }
 
 // waitForReadyOrExit polls the node's HTTP interface until the server answers a query,
-// the context is cancelled, or the server process exits. The query asks the server for
-// its native TCP port, so readiness also proves that the server answering on nd.httpPort
-// is this node: an answer naming another port means a different server took the HTTP
+// the context is cancelled, or the server process exits. The query reads back the
+// node's per-launch instance ID, so readiness also proves that the server answering on
+// nd.httpPort is this node: any other answer means a different process took the HTTP
 // port, and waitForReadyOrExit returns ErrPortConflict.
 //
 // If the process exits before becoming ready, it returns ErrServerExited (wrapping the
@@ -94,7 +106,7 @@ func takenPort(ports []uint32) (uint32, bool) {
 // so ClickHouse aborts startup when any listener fails to bind instead of serving
 // without it.
 func waitForReadyOrExit(ctx context.Context, nd *node) error {
-	probeURL := fmt.Sprintf("http://127.0.0.1:%d/?query=%s", nd.httpPort, url.QueryEscape(tcpPortQuery))
+	probeURL := fmt.Sprintf("http://127.0.0.1:%d/?query=%s", nd.httpPort, url.QueryEscape(instanceQuery))
 	client := &http.Client{Timeout: healthRequestTimeout}
 
 	// exited reports the process-exit error if the child has already exited, else nil.
@@ -115,7 +127,7 @@ func waitForReadyOrExit(ctx context.Context, nd *node) error {
 			return false, err
 		}
 
-		tcpPort, ok := serverTCPPort(ctx, client, probeURL)
+		instanceID, ok := serverInstanceID(ctx, client, probeURL)
 		if !ok {
 			return false, nil
 		}
@@ -124,9 +136,8 @@ func waitForReadyOrExit(ctx context.Context, nd *node) error {
 			return false, err
 		}
 
-		if tcpPort != nd.tcpPort {
-			return false, fmt.Errorf("%w: HTTP port %d is served by another ClickHouse server "+
-				"(its tcp_port is %d, want %d)", ErrPortConflict, nd.httpPort, tcpPort, nd.tcpPort)
+		if instanceID != nd.instanceID {
+			return false, fmt.Errorf("%w: HTTP port %d is served by another server", ErrPortConflict, nd.httpPort)
 		}
 
 		return true, nil
@@ -145,38 +156,34 @@ func waitForReadyOrExit(ctx context.Context, nd *node) error {
 	return err
 }
 
-// tcpPortQuery asks a server for the native TCP port it was configured with.
-const tcpPortQuery = "SELECT getServerPort('tcp_port')"
+// instanceQuery reads back the instance ID macro from the server's config. It uses
+// system.macros rather than a newer function so that it works on old releases too.
+const instanceQuery = "SELECT substitution FROM system.macros WHERE macro = 'embedded_clickhouse_instance'"
 
-// maxProbeBody bounds how much of a probe response is read; a port number is tiny.
-const maxProbeBody = 64
+// maxProbeBody bounds how much of a probe response is read; an instance ID is tiny.
+const maxProbeBody = 128
 
-// serverTCPPort runs tcpPortQuery at probeURL and returns the port the server reports.
-// ok is false while the server is not answering queries yet, or when whatever answers
-// is not a ClickHouse server.
-func serverTCPPort(ctx context.Context, client *http.Client, probeURL string) (uint32, bool) {
+// serverInstanceID runs instanceQuery at probeURL and returns the answer. ok is false
+// while nothing answers with HTTP 200 yet. A 200 from a server that is not this node
+// (another ClickHouse server, or not ClickHouse at all) returns a different answer.
+func serverInstanceID(ctx context.Context, client *http.Client, probeURL string) (string, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		return 0, false
+		return "", false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false
+		return "", false
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBody))
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return 0, false
+		return "", false
 	}
 
-	port, err := strconv.ParseUint(strings.TrimSpace(string(body)), 10, 16)
-	if err != nil {
-		return 0, false
-	}
-
-	return uint32(port), true
+	return strings.TrimSpace(string(body)), true
 }
 
 // ping reports whether a GET of url answers HTTP 200. It probes the Keeper quorum.

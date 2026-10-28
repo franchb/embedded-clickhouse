@@ -27,7 +27,7 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 	topo := threeNodeTopology()
 	dir := t.TempDir()
 
-	configPath, err := writeClusterNodeConfig(dir, 0, topo)
+	configPath, err := writeClusterNodeConfig(dir, testInstanceID, 0, topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +41,7 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 
 	checks := []string{
 		"<listen_host>127.0.0.1</listen_host>",
+		"<embedded_clickhouse_instance>" + testInstanceID + "</embedded_clickhouse_instance>",
 		"<tcp_port>19000</tcp_port>",
 		"<http_port>18123</http_port>",
 		"<interserver_http_port>19009</interserver_http_port>",
@@ -79,7 +80,7 @@ func TestWriteClusterNodeConfig_Node1HasServerID2(t *testing.T) {
 	topo := threeNodeTopology()
 	dir := t.TempDir()
 
-	configPath, err := writeClusterNodeConfig(dir, 1, topo)
+	configPath, err := writeClusterNodeConfig(dir, testInstanceID, 1, topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestWriteClusterNodeConfig_CreatesKeeperDirs(t *testing.T) {
 	topo := threeNodeTopology()
 	dir := t.TempDir()
 
-	_, err := writeClusterNodeConfig(dir, 0, topo)
+	_, err := writeClusterNodeConfig(dir, testInstanceID, 0, topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestWriteClusterNodeConfig_SettingsSortedDeterministically(t *testing.T) {
 	)
 	dir := t.TempDir()
 
-	configPath, err := writeClusterNodeConfig(dir, 0, topo)
+	configPath, err := writeClusterNodeConfig(dir, testInstanceID, 0, topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestWriteClusterNodeConfig_SettingsSortedDeterministically(t *testing.T) {
 func TestWriteClusterNodeConfig_StartsWithXMLDeclaration(t *testing.T) {
 	t.Parallel()
 
-	configPath, err := writeClusterNodeConfig(t.TempDir(), 0, threeNodeTopology())
+	configPath, err := writeClusterNodeConfig(t.TempDir(), testInstanceID, 0, threeNodeTopology())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestWriteClusterNodeConfig_RejectsManagedKeys(t *testing.T) {
 	for _, key := range []string{"tcp_port", "users", "keeper_server", "zookeeper", "remote_servers", "macros"} {
 		topo := buildClusterTopology(threeNodeTopology().Nodes, map[string]string{key: "1"})
 
-		_, err := writeClusterNodeConfig(t.TempDir(), 0, topo)
+		_, err := writeClusterNodeConfig(t.TempDir(), testInstanceID, 0, topo)
 		if !errors.Is(err, ErrInvalidSettingKey) {
 			t.Errorf("setting %q: err = %v, want ErrInvalidSettingKey", key, err)
 		}
@@ -242,7 +243,7 @@ func TestWriteClusterNodeConfig_InvalidSettingKey(t *testing.T) {
 	)
 	dir := t.TempDir()
 
-	_, err := writeClusterNodeConfig(dir, 0, topo)
+	_, err := writeClusterNodeConfig(dir, testInstanceID, 0, topo)
 	if err == nil {
 		t.Fatal("expected error for invalid setting key")
 	}
@@ -256,7 +257,7 @@ func TestWriteClusterNodeConfig_DifferentNodes(t *testing.T) {
 	for nodeIdx := range 3 {
 		dir := t.TempDir()
 
-		configPath, err := writeClusterNodeConfig(dir, nodeIdx, topo)
+		configPath, err := writeClusterNodeConfig(dir, testInstanceID, nodeIdx, topo)
 		if err != nil {
 			t.Fatalf("node %d: %v", nodeIdx, err)
 		}
