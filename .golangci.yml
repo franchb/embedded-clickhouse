@@ -141,7 +141,7 @@ linters:
         - G115
         # Unchecked errors — covered by errcheck with exclude-functions config.
         - G104
-        # SSRF false positive: the URL is always http://127.0.0.1:<port>/ping,
+        # SSRF false positive: health URLs are always http://127.0.0.1:<port>/...,
         # constructed from a locally-allocated port, never from user input.
         - G704
     goconst:

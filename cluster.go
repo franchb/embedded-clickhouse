@@ -144,6 +144,30 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 		return nil, err
 	}
 
+	// One StartTimeout covers every attempt.
+	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
+	defer cancel()
+
+	var nodes []*EmbeddedClickHouse
+
+	// Cluster ports are always auto-allocated, so a port conflict is always retryable.
+	err = retryOnPortConflict(readyCtx, true, cfg.logger, func() error {
+		var launchErr error
+
+		nodes, launchErr = launchCluster(readyCtx, binPath, cfg, replicas)
+
+		return launchErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}
+
+// launchCluster allocates ports, launches every replica, and waits for all of them and
+// for Keeper quorum. On error, every launched node is torn down.
+func launchCluster(ctx context.Context, binPath string, cfg Config, replicas int) ([]*EmbeddedClickHouse, error) {
 	// Allocate every node's ports in one batch, so no port repeats within or across nodes.
 	ports, err := allocateClusterPorts(replicas)
 	if err != nil {
@@ -174,9 +198,10 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 			tempPattern: fmt.Sprintf("embedded-clickhouse-cluster-%d-*", i),
 			tcpPort:     ports[i].TCP,
 			httpPort:    ports[i].HTTP,
+			ports:       ports[i].all(),
 			stopTimeout: cfg.stopTimeout,
-			writeConfig: func(dir string) (string, error) {
-				return writeClusterNodeConfig(dir, i, topo)
+			writeConfig: func(dir, instanceID string) (string, error) {
+				return writeClusterNodeConfig(dir, instanceID, i, topo)
 			},
 			output: output,
 		})
@@ -187,16 +212,13 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 		launched = append(launched, nd)
 	}
 
-	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
-	defer cancel()
-
-	// Wait for all nodes to respond to /ping.
-	if err := waitForAllNodesReady(readyCtx, launched); err != nil {
+	// Wait for every node to answer queries.
+	if err := waitForAllNodesReady(ctx, launched); err != nil {
 		return nil, err
 	}
 
 	// Wait for Keeper quorum.
-	if err := waitForKeeperQuorum(readyCtx, launched[0].httpPort); err != nil {
+	if err := waitForKeeperQuorum(ctx, launched[0].httpPort); err != nil {
 		return nil, err
 	}
 
@@ -332,7 +354,7 @@ func allocateClusterPorts(replicas int) ([]clusterNodePorts, error) {
 	return nodes, nil
 }
 
-// waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.
+// waitForAllNodesReady waits for every node to become ready, in parallel.
 // If any node's process exits (or otherwise fails) during startup, the first error
 // cancels the shared context so the remaining nodes stop polling immediately instead
 // of burning the full start timeout. Cancellation is triggered only after a real error
@@ -346,18 +368,14 @@ func waitForAllNodesReady(ctx context.Context, nodes []*node) error {
 	readyErrs := make(chan error, len(nodes))
 
 	var wg sync.WaitGroup
-	for i, node := range nodes {
-		wg.Add(1)
-
-		go func(i int, port uint32, p *process) {
-			defer wg.Done()
-
-			if err := waitForReadyOrExit(ctx, port, p); err != nil {
+	for i, nd := range nodes {
+		wg.Go(func() {
+			if err := waitForReadyOrExit(ctx, nd); err != nil {
 				readyErrs <- fmt.Errorf("embedded-clickhouse: node %d not ready: %w", i, err)
 
 				cancel() // stop sibling waits as soon as one node fails
 			}
-		}(i, node.httpPort, node.proc)
+		})
 	}
 
 	wg.Wait()

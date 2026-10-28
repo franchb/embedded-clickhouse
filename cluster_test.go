@@ -94,8 +94,8 @@ func TestCluster_NodeOutOfRange(t *testing.T) {
 	cl := &Cluster{
 		started: true,
 		nodes: []*EmbeddedClickHouse{
-			{node: node{proc: nil, dir: "", ownsDir: false, tcpPort: 1, httpPort: 0, stopTimeout: 0}},
-			{node: node{proc: nil, dir: "", ownsDir: false, tcpPort: 2, httpPort: 0, stopTimeout: 0}},
+			{node: node{proc: nil, instanceID: "", dir: "", ownsDir: false, tcpPort: 1, httpPort: 0, ports: nil, stopTimeout: 0}},
+			{node: node{proc: nil, instanceID: "", dir: "", ownsDir: false, tcpPort: 2, httpPort: 0, ports: nil, stopTimeout: 0}},
 		},
 	}
 
@@ -131,8 +131,9 @@ func launchFakeCluster(t *testing.T, fake string, replicas int, cfg Config) *Clu
 			tempPattern: "embedded-clickhouse-test-*",
 			tcpPort:     uint32(1000 + i),
 			httpPort:    uint32(2000 + i),
+			ports:       nil,
 			stopTimeout: cfg.stopTimeout,
-			writeConfig: func(string) (string, error) { return "unused", nil },
+			writeConfig: func(string, string) (string, error) { return "unused", nil },
 			output:      io.Discard,
 		})
 		require.NoError(t, err)
@@ -153,7 +154,12 @@ func TestCluster_StopIsConcurrent(t *testing.T) {
 		stopTimeout = time.Second
 	)
 
-	cl := launchFakeCluster(t, writeStubbornBinary(t), replicas, DefaultConfig().StopTimeout(stopTimeout))
+	fake := writeStubbornBinary(t)
+	cl := launchFakeCluster(t, fake, replicas, DefaultConfig().StopTimeout(stopTimeout))
+
+	for _, n := range cl.nodes {
+		waitIgnoringTerm(t, fake, n.node.proc)
+	}
 
 	start := time.Now()
 	err := cl.Stop()

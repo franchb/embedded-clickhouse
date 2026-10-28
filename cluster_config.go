@@ -10,6 +10,7 @@ import (
 const clusterConfigTemplate = `<?xml version="1.0"?>
 <clickhouse>
 {{- template "logger" .}}
+{{- template "listen" .}}
 
     <tcp_port>{{.TCPPort}}</tcp_port>
     <http_port>{{.HTTPPort}}</http_port>
@@ -70,6 +71,7 @@ const clusterConfigTemplate = `<?xml version="1.0"?>
         <shard>01</shard>
         <replica>{{.ReplicaName}}</replica>
         <cluster>test_cluster</cluster>
+{{- template "instance" .}}
     </macros>
 {{- template "settings" .}}
 </clickhouse>
@@ -81,7 +83,7 @@ const clusterConfigTemplate = `<?xml version="1.0"?>
 //nolint:gochecknoglobals // immutable lookup table
 var clusterManagedKeys = append(slices.Clone(serverManagedKeys),
 	"interserver_http_port", "interserver_http_host",
-	"keeper_server", "zookeeper", "remote_servers", "distributed_ddl", "macros",
+	"keeper_server", "zookeeper", "remote_servers", "distributed_ddl",
 )
 
 //nolint:gochecknoglobals // compile once, reuse
@@ -110,6 +112,11 @@ type clusterNodePorts struct {
 	Interserver uint32
 	Keeper      uint32
 	KeeperRaft  uint32
+}
+
+// all returns every port of the node.
+func (p clusterNodePorts) all() []uint32 {
+	return []uint32{p.TCP, p.HTTP, p.Interserver, p.Keeper, p.KeeperRaft}
 }
 
 // clusterTopology is pre-computed shared topology built from all node ports.
@@ -145,13 +152,13 @@ func buildClusterTopology(ports []clusterNodePorts, settings map[string]string) 
 }
 
 // writeClusterNodeConfig generates a ClickHouse XML config for one cluster node.
-func writeClusterNodeConfig(dir string, nodeIndex int, topo clusterTopology) (string, error) {
+func writeClusterNodeConfig(dir, instanceID string, nodeIndex int, topo clusterTopology) (string, error) {
 	if err := validateSettings(topo.Settings, clusterManagedKeys); err != nil {
 		return "", err
 	}
 
 	node := topo.Nodes[nodeIndex]
-	base := newBaseConfigData(dir, node.TCP, node.HTTP, topo.Settings)
+	base := newBaseConfigData(dir, instanceID, node.TCP, node.HTTP, topo.Settings)
 	keeperLogDir := filepath.Join(dir, "coordination", "log")
 	keeperSnapshotDir := filepath.Join(dir, "coordination", "snapshots")
 

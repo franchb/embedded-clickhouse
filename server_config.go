@@ -21,6 +21,16 @@ const commonConfigTemplates = `
     </logger>
 {{- end}}
 
+{{- define "listen"}}
+{{- if .ListenHost}}
+    <listen_host>{{.ListenHost}}</listen_host>
+{{- end}}
+{{- end}}
+
+{{- define "instance"}}
+        <embedded_clickhouse_instance>{{.InstanceID}}</embedded_clickhouse_instance>
+{{- end}}
+
 {{- define "paths"}}
     <path>{{xmlEscape .DataDir}}/</path>
     <tmp_path>{{xmlEscape .TmpDir}}/</tmp_path>
@@ -61,11 +71,16 @@ const commonConfigTemplates = `
 const configTemplate = `<?xml version="1.0"?>
 <clickhouse>
 {{- template "logger" .}}
+{{- template "listen" .}}
 
     <tcp_port>{{.TCPPort}}</tcp_port>
     <http_port>{{.HTTPPort}}</http_port>
 {{template "paths" .}}
 {{template "access" .}}
+
+    <macros>
+{{- template "instance" .}}
+    </macros>
 {{- template "settings" .}}
 </clickhouse>
 `
@@ -75,7 +90,10 @@ const configTemplate = `<?xml version="1.0"?>
 //
 //nolint:gochecknoglobals // immutable lookup table
 var serverManagedKeys = []string{
-	"logger", "tcp_port", "http_port",
+	"logger", "tcp_port", "http_port", "macros",
+	// Either would let a server keep running without a listener it failed to bind, or
+	// share a port with another server, which defeats port-conflict detection.
+	"listen_try", "listen_reuse_port",
 	"path", "tmp_path", "user_files_path", "format_schema_path",
 	"users", "profiles", "quotas",
 }
@@ -104,6 +122,14 @@ var configTmpl = newConfigTemplate("config", configTemplate)
 
 // baseConfigData holds the template fields shared by single-node and cluster configs.
 type baseConfigData struct {
+	// InstanceID is a random per-launch token, written as the embedded_clickhouse_instance
+	// macro. The readiness probe reads it back to tell this server from any other one
+	// that answers on the same port.
+	InstanceID string
+	// ListenHost is written as <listen_host> unless empty. An explicit listen_host
+	// turns off ClickHouse's implicit listen_try mode, in which a failed bind is only
+	// logged as a warning and the server keeps running without that listener.
+	ListenHost      string
 	TCPPort         uint32
 	HTTPPort        uint32
 	DataDir         string
@@ -114,8 +140,10 @@ type baseConfigData struct {
 }
 
 // newBaseConfigData lays out the standard server directories under dir.
-func newBaseConfigData(dir string, tcpPort, httpPort uint32, settings map[string]string) baseConfigData {
+func newBaseConfigData(dir, instanceID string, tcpPort, httpPort uint32, settings map[string]string) baseConfigData {
 	return baseConfigData{
+		InstanceID:      instanceID,
+		ListenHost:      defaultListenHost(settings),
 		TCPPort:         tcpPort,
 		HTTPPort:        httpPort,
 		DataDir:         filepath.Join(dir, "data"),
@@ -124,6 +152,17 @@ func newBaseConfigData(dir string, tcpPort, httpPort uint32, settings map[string
 		FormatSchemaDir: filepath.Join(dir, "format_schemas"),
 		Settings:        settings,
 	}
+}
+
+// defaultListenHost returns the loopback address to listen on, or "" when the user
+// supplies their own listen_host through Settings. Either way listen_host is set, so
+// ClickHouse aborts startup if it cannot bind a port rather than silently skipping it.
+func defaultListenHost(settings map[string]string) string {
+	if _, ok := settings["listen_host"]; ok {
+		return ""
+	}
+
+	return loopbackHost
 }
 
 // dirs returns the directories that must exist before the server starts.
@@ -184,12 +223,12 @@ func writeConfigFile(path string, tmpl *template.Template, data any) error {
 }
 
 // writeServerConfig generates a ClickHouse XML config file in the given directory.
-func writeServerConfig(dir string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
+func writeServerConfig(dir, instanceID string, tcpPort, httpPort uint32, settings map[string]string) (string, error) {
 	if err := validateSettings(settings, serverManagedKeys); err != nil {
 		return "", err
 	}
 
-	data := newBaseConfigData(dir, tcpPort, httpPort, settings)
+	data := newBaseConfigData(dir, instanceID, tcpPort, httpPort, settings)
 
 	if err := makeDirs(data.dirs()...); err != nil {
 		return "", err

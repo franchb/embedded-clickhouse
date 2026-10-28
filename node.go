@@ -2,6 +2,7 @@ package embeddedclickhouse
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,10 +16,12 @@ import (
 // down with node.teardown, so the two paths cannot drift apart.
 type node struct {
 	proc        *process
+	instanceID  string // per-launch token in the server config; see baseConfigData.InstanceID
 	dir         string // server working directory: config, data, logs
 	ownsDir     bool   // dir was created by launchNode and is removed by teardown
 	tcpPort     uint32
 	httpPort    uint32
+	ports       []uint32      // every port the server listens on, probed after an early exit
 	stopTimeout time.Duration // resolved StopTimeout, so Stop never sees an unresolved 0
 }
 
@@ -31,8 +34,9 @@ type nodeSpec struct {
 	tempPattern string
 	tcpPort     uint32
 	httpPort    uint32
+	ports       []uint32 // every port the server listens on, including tcpPort and httpPort
 	stopTimeout time.Duration
-	writeConfig func(dir string) (string, error)
+	writeConfig func(dir, instanceID string) (string, error)
 	output      io.Writer
 }
 
@@ -41,10 +45,12 @@ type nodeSpec struct {
 func launchNode(spec nodeSpec) (*node, error) {
 	nd := &node{
 		proc:        nil,
+		instanceID:  rand.Text(),
 		dir:         "",
 		ownsDir:     false,
 		tcpPort:     spec.tcpPort,
 		httpPort:    spec.httpPort,
+		ports:       spec.ports,
 		stopTimeout: spec.stopTimeout,
 	}
 
@@ -63,7 +69,7 @@ func launchNode(spec nodeSpec) (*node, error) {
 		nd.dir, nd.ownsDir = dir, true
 	}
 
-	configPath, err := spec.writeConfig(nd.dir)
+	configPath, err := spec.writeConfig(nd.dir, nd.instanceID)
 	if err != nil {
 		_ = nd.removeDir()
 		return nil, err
@@ -94,10 +100,12 @@ func (n *node) teardown() error {
 	}
 
 	n.proc = nil
+	n.instanceID = ""
 	n.dir = ""
 	n.ownsDir = false
 	n.tcpPort = 0
 	n.httpPort = 0
+	n.ports = nil
 
 	return errors.Join(errs...)
 }
@@ -112,6 +120,27 @@ func (n *node) removeDir() error {
 	}
 
 	return nil
+}
+
+// maxStartAttempts bounds how many times a start runs when it keeps losing a port to
+// another process.
+const maxStartAttempts = 3
+
+// retryOnPortConflict runs attempt, and runs it again while it fails with ErrPortConflict,
+// up to maxStartAttempts times. Auto-allocated ports are released before the server binds
+// them, so a concurrent process can take one in between; an attempt with freshly
+// allocated ports almost always gets clean ones. Pass retry=false when a port is
+// user-fixed, since another attempt would bind the same port again.
+func retryOnPortConflict(ctx context.Context, retry bool, logger io.Writer, attempt func() error) error {
+	for try := 1; ; try++ {
+		err := attempt()
+		if err == nil || !retry || try == maxStartAttempts || ctx.Err() != nil || !errors.Is(err, ErrPortConflict) {
+			return err
+		}
+
+		logf(logger, "embedded-clickhouse: %v; retrying with new ports (attempt %d of %d)\n",
+			err, try+1, maxStartAttempts)
+	}
 }
 
 // startGate tracks an in-flight Start so the owner's mutex is not held across the

@@ -47,7 +47,7 @@ func TestEmbeddedClickHouse_Accessors(t *testing.T) {
 
 	s := &EmbeddedClickHouse{
 		started: true,
-		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, stopTimeout: 0},
+		node:    node{proc: nil, instanceID: "", dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, ports: nil, stopTimeout: 0},
 	}
 
 	assert.True(t, s.Started())
@@ -103,7 +103,7 @@ func TestStop_AbortsInFlightStart(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(
 		DefaultConfig().
@@ -169,10 +169,12 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 
 	rec := &recordingTB{TB: t, errs: nil, cleanups: nil}
 
+	fake := writeIdentifyingBinary(t)
+
 	s := NewServerForTest(rec, DefaultConfig().
-		BinaryPath(writeSleepingBinary(t)).
+		BinaryPath(fake).
 		Logger(io.Discard).
-		HTTPPort(servePingStatus(t, http.StatusOK)))
+		HTTPPort(serveInstanceOf(t, fake)))
 
 	require.NoError(t, s.Stop())
 
@@ -189,10 +191,12 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 func TestStop_ZeroStopTimeoutUsesDefault(t *testing.T) {
 	t.Parallel()
 
+	fake := writeIdentifyingBinary(t)
+
 	s := NewServer(DefaultConfig().
-		BinaryPath(writeSleepingBinary(t)).
+		BinaryPath(fake).
 		Logger(io.Discard).
-		HTTPPort(servePingStatus(t, http.StatusOK)).
+		HTTPPort(serveInstanceOf(t, fake)).
 		StopTimeout(0))
 
 	require.NoError(t, s.Start())
@@ -203,7 +207,7 @@ func TestStartContext_Canceled(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(DefaultConfig().BinaryPath(fake).Logger(io.Discard).HTTPPort(httpPort))
 
@@ -234,7 +238,7 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	// Hold a listener answering non-200 on /ping and pin HTTPPort to it, so the
 	// readiness probe deterministically fails (the fake binary never binds a port)
 	// and no sibling t.Parallel() test can be assigned the port and answer 200.
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	s := NewServer(
 		DefaultConfig().
@@ -269,20 +273,39 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	assert.ErrorIs(t, s.Stop(), ErrServerNotStarted)
 }
 
-// servePingStatus serves the given status on /ping from a held listener and returns
-// its port. Holding the listener keeps sibling parallel tests from being assigned it.
-func servePingStatus(t *testing.T, status int) uint32 {
+// writeIdentifyingBinary writes a fake server that stays alive until signalled, after
+// copying its instance ID from the config it was given into "instance" next to the
+// script. serveInstanceOf then answers the readiness probe the way the real server would.
+func writeIdentifyingBinary(t *testing.T) string {
 	t.Helper()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(status)
-	})
+	return writeScriptBinary(t, `#!/bin/sh
+sed -n 's|.*<embedded_clickhouse_instance>\(.*\)</embedded_clickhouse_instance>.*|\1|p' "${2#--config-file=}" \
+	> "$(dirname "$0")/instance.tmp" && mv "$(dirname "$0")/instance.tmp" "$(dirname "$0")/instance"
+exec sleep 300
+`)
+}
+
+// serveInstanceOf stands in for the HTTP interface of a writeIdentifyingBinary fake at
+// binPath: it reports the fake's instance ID once written, and 503 until then.
+func serveInstanceOf(t *testing.T, binPath string) uint32 {
+	t.Helper()
+
+	idPath := filepath.Join(filepath.Dir(binPath), "instance")
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		id, err := os.ReadFile(idPath)
+		if err != nil {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+
+		rw.Write(id)
+	})}
 
 	go srv.Serve(l)
 
@@ -301,10 +324,29 @@ func writeSleepingBinary(t *testing.T) string {
 
 // writeStubbornBinary writes a fake server that ignores SIGTERM, so stopping it always
 // runs into the StopTimeout. Ignored dispositions survive exec, so sleep ignores it too.
+// A SIGTERM that arrives before the trap is set still kills the shell, so each process
+// then creates "ignoring-term.<pid>" next to the script; see waitIgnoringTerm.
 func writeStubbornBinary(t *testing.T) string {
 	t.Helper()
 
-	return writeScriptBinary(t, "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n")
+	return writeScriptBinary(t,
+		"#!/bin/sh\ntrap '' TERM\n: > \"$(dirname \"$0\")/ignoring-term.$$\"\nexec sleep 300\n")
+}
+
+// waitIgnoringTerm blocks until every fake process started from the writeStubbornBinary
+// script at binPath has set its SIGTERM trap.
+func waitIgnoringTerm(t *testing.T, binPath string, procs ...*process) {
+	t.Helper()
+
+	for _, p := range procs {
+		marker := filepath.Join(filepath.Dir(binPath), fmt.Sprintf("ignoring-term.%d", p.cmd.Process.Pid))
+
+		require.Eventually(t, func() bool {
+			_, err := os.Stat(marker)
+
+			return err == nil
+		}, 10*time.Second, 10*time.Millisecond, "fake process never set its SIGTERM trap")
+	}
 }
 
 func writeScriptBinary(t *testing.T, script string) string {

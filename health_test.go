@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -55,31 +56,72 @@ func TestPollUntil(t *testing.T) {
 	}
 }
 
-func TestWaitForReady_ImmediateSuccess(t *testing.T) {
-	t.Parallel()
+// testInstanceID is the instance ID that probe stubs report for the node under test.
+const testInstanceID = "TESTINSTANCE"
 
-	// Start a server that responds to /ping with 200.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Ok.\n")
-	})
+// probeNode returns a node stand-in for waitForReadyOrExit, with testInstanceID.
+func probeNode(proc *process, httpPort uint32, ports ...uint32) *node {
+	return &node{
+		proc:        proc,
+		instanceID:  testInstanceID,
+		dir:         "",
+		ownsDir:     false,
+		tcpPort:     0,
+		httpPort:    httpPort,
+		ports:       ports,
+		stopTimeout: 0,
+	}
+}
+
+// exitedProc returns a process stand-in that has already exited with errTestProcExit.
+func exitedProc() *process {
+	done := make(chan struct{})
+	close(done)
+
+	return &process{cmd: nil, done: done, waitErr: errTestProcExit}
+}
+
+// serveProbeBody answers every request with status and body from a held listener and
+// returns its port. Holding the listener keeps sibling parallel tests from being
+// assigned the port.
+func serveProbeBody(t *testing.T, status int, body string) uint32 {
+	t.Helper()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	port := uint32(l.Addr().(*net.TCPAddr).Port)
-
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	})}
 
 	go srv.Serve(l)
-	defer srv.Close()
+
+	t.Cleanup(func() { srv.Close() })
+
+	return uint32(l.Addr().(*net.TCPAddr).Port)
+}
+
+// serveProbe stands in for a ClickHouse HTTP interface: it answers the readiness query
+// with status and, on 200, reports instanceID, the way ClickHouse answers instanceQuery.
+// It returns the HTTP port.
+func serveProbe(t *testing.T, status int, instanceID string) uint32 {
+	t.Helper()
+
+	return serveProbeBody(t, status, instanceID+"\n")
+}
+
+func TestWaitForReady_ImmediateSuccess(t *testing.T) {
+	t.Parallel()
+
+	httpPort := serveProbe(t, http.StatusOK, testInstanceID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = waitForReadyOrExit(ctx, port, liveProc())
+	err := waitForReadyOrExit(ctx, probeNode(liveProc(), httpPort))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +139,7 @@ func TestWaitForReady_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	err = waitForReadyOrExit(ctx, port, liveProc())
+	err = waitForReadyOrExit(ctx, probeNode(liveProc(), port))
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -115,9 +157,8 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 	l.Close() // Close immediately so nothing is listening yet.
 
 	// Start serving after a delay.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Ok.\n")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintln(w, testInstanceID)
 	})
 
 	srvCh := make(chan *http.Server, 1)
@@ -130,7 +171,7 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 			return
 		}
 
-		srv := &http.Server{Handler: mux}
+		srv := &http.Server{Handler: handler}
 		srvCh <- srv
 
 		srv.Serve(l2)
@@ -147,7 +188,7 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = waitForReadyOrExit(ctx, port, liveProc())
+	err = waitForReadyOrExit(ctx, probeNode(liveProc(), port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,31 +197,13 @@ func TestWaitForReady_DelayedStart(t *testing.T) {
 func TestWaitForReadyOrExit_ReadyWins(t *testing.T) {
 	t.Parallel()
 
-	// Serve /ping with 200. p.done is never closed, so readiness must win.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Ok.\n")
-	})
-
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	port := uint32(l.Addr().(*net.TCPAddr).Port)
-
-	srv := &http.Server{Handler: mux}
-
-	go srv.Serve(l)
-	defer srv.Close()
-
-	// A process whose done channel is never closed: it must not influence the result.
-	proc := &process{cmd: nil, done: make(chan struct{}), waitErr: nil}
+	// The process's done channel is never closed, so readiness must win.
+	httpPort := serveProbe(t, http.StatusOK, testInstanceID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := waitForReadyOrExit(ctx, port, proc); err != nil {
+	if err := waitForReadyOrExit(ctx, probeNode(liveProc(), httpPort)); err != nil {
 		t.Fatalf("waitForReadyOrExit = %v, want nil", err)
 	}
 }
@@ -188,47 +211,125 @@ func TestWaitForReadyOrExit_ReadyWins(t *testing.T) {
 func TestWaitForReadyOrExit_EarlyExit(t *testing.T) {
 	t.Parallel()
 
-	// Hold a listener that answers non-200 on /ping for the whole test: the
-	// readiness probe then deterministically fails and the port stays bound, so a
-	// sibling t.Parallel() test cannot be reassigned it and answer 200 (the
+	// Hold a listener that answers non-200 for the whole test: the readiness probe
+	// then deterministically fails and the port stays bound, so a sibling
+	// t.Parallel() test cannot be reassigned it and answer 200 (the
 	// ephemeral-port-reuse flake that allocatePort() would expose).
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	})
-
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	port := uint32(l.Addr().(*net.TCPAddr).Port)
-
-	srv := &http.Server{Handler: mux}
-
-	go srv.Serve(l)
-	defer srv.Close()
-
-	// A process that has already exited with a non-nil error.
-	done := make(chan struct{})
-	close(done)
-
-	proc := &process{cmd: nil, done: done, waitErr: errTestProcExit}
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
 
 	// Generous context: the early-exit path, not the deadline, must end the wait.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	err = waitForReadyOrExit(ctx, port, proc)
+	err := waitForReadyOrExit(ctx, probeNode(exitedProc(), httpPort))
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrServerExited) {
 		t.Fatalf("waitForReadyOrExit = %v, want ErrServerExited", err)
 	}
 
+	// The node's port list is empty, so nothing it owns can be reported as taken.
+	if errors.Is(err, ErrPortConflict) {
+		t.Fatalf("waitForReadyOrExit = %v, want no ErrPortConflict", err)
+	}
+
 	if elapsed > 2*time.Second {
 		t.Errorf("waitForReadyOrExit took %v, want fast early-exit", elapsed)
+	}
+}
+
+// TestWaitForReadyOrExit_ForeignServer is the HTTP half of issue #51: whatever else
+// answers on the node's HTTP port, another ClickHouse server (which reports its own
+// instance ID, or none) or not ClickHouse at all, the wait must fail with
+// ErrPortConflict instead of declaring the wrong server ready.
+func TestWaitForReadyOrExit_ForeignServer(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"other instance":           "OTHERINSTANCE\n",
+		"ClickHouse without macro": "",
+		"not ClickHouse":           "Ok.\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			httpPort := serveProbeBody(t, http.StatusOK, body)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := waitForReadyOrExit(ctx, probeNode(liveProc(), httpPort))
+			if !errors.Is(err, ErrPortConflict) {
+				t.Fatalf("waitForReadyOrExit = %v, want ErrPortConflict", err)
+			}
+		})
+	}
+}
+
+// TestWaitForReadyOrExit_ExitOnTakenPort is the TCP half of issue #51: a server that
+// exits while another process holds one of its ports lost a bind, and the error says so.
+func TestWaitForReadyOrExit_ExitOnTakenPort(t *testing.T) {
+	t.Parallel()
+
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	tcpPort := uint32(l.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = waitForReadyOrExit(ctx, probeNode(exitedProc(), httpPort, tcpPort))
+	if !errors.Is(err, ErrPortConflict) || !errors.Is(err, ErrServerExited) || !errors.Is(err, errTestProcExit) {
+		t.Fatalf("waitForReadyOrExit = %v, want ErrPortConflict wrapping ErrServerExited and the wait error", err)
+	}
+}
+
+// TestWaitForReadyOrExit_ExitWithNetworkError: a server that exits with NETWORK_ERROR
+// failed to bind a listener even when the port's holder has since released it.
+func TestWaitForReadyOrExit_ExitWithNetworkError(t *testing.T) {
+	t.Parallel()
+
+	waitErr := exec.Command(writeFakeBinary(t, networkErrorExitCode)).Run()
+
+	done := make(chan struct{})
+	close(done)
+
+	proc := &process{cmd: nil, done: done, waitErr: waitErr}
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := waitForReadyOrExit(ctx, probeNode(proc, httpPort))
+	if !errors.Is(err, ErrPortConflict) || !errors.Is(err, ErrServerExited) {
+		t.Fatalf("waitForReadyOrExit = %v, want ErrPortConflict wrapping ErrServerExited", err)
+	}
+}
+
+func TestTakenPort(t *testing.T) {
+	t.Parallel()
+
+	if port, taken := takenPort(nil); taken {
+		t.Fatalf("takenPort(nil) = %d, true; want false", port)
+	}
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	held := uint32(l.Addr().(*net.TCPAddr).Port)
+
+	if port, taken := takenPort([]uint32{held}); !taken || port != held {
+		t.Fatalf("takenPort = %d, %v; want %d, true", port, taken, held)
 	}
 }
 

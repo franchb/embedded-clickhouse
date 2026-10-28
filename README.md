@@ -396,8 +396,9 @@ Environments with less than 2 GB total RAM will be fragile regardless of setting
 3. **Cache** — stores the extracted binary at `~/.cache/embedded-clickhouse/` for reuse
 4. **Configure** — generates a minimal XML config with allocated ports and a temp data directory
 5. **Start** — launches `clickhouse server` as a child process
-6. **Health check** — polls `GET /ping` every 100ms until the server responds; if the process exits first, `Start` fails immediately with `ErrServerExited`
-7. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory. A server that crashed (e.g. SIGSEGV, OOM kill) before `Stop` is reported as an error, not as a clean stop
+6. **Health check** — every 100ms, asks the server over HTTP for a random per-launch instance ID written into its config (read from `system.macros`) until it answers; if the process exits first, `Start` fails immediately with `ErrServerExited`
+7. **Port conflicts** — auto-allocated ports are released before ClickHouse binds them, so a concurrent process (say, another test's server under `go test -parallel`) can take one in between. The config sets `<listen_host>127.0.0.1</listen_host>`, so ClickHouse then exits instead of running without that listener, and the health check rejects anything else answering on the HTTP port, since only this server knows its instance ID. Either way `Start` reports `ErrPortConflict`, after up to 3 attempts with fresh ports when every port was auto-allocated. `listen_try` and `listen_reuse_port` are reserved, since either would defeat this. The server listens on `127.0.0.1` only, not on `::1`. You can set `listen_host` through `Settings`, but the value must cover `127.0.0.1` (for example `0.0.0.0`), because the health check and every address accessor dial `127.0.0.1`
+8. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory. A server that crashed (e.g. SIGSEGV, OOM kill) before `Stop` is reported as an error, not as a clean stop
 
 ## License
 
