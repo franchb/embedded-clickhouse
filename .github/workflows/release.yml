@@ -1,0 +1,99 @@
+name: Release
+
+# Manually run: tags a commit that is already on main and passed CI, and publishes a
+# GitHub release for it. GitHub's generated notes (the merged-PR list) are appended to
+# the optional highlights given as input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to create, e.g. v0.5.0"
+        required: true
+        type: string
+      sha:
+        description: "Full 40-character commit SHA on main to tag"
+        required: true
+        type: string
+      highlights:
+        description: "Markdown placed above the generated notes (optional)"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ inputs.version }}
+    # Only the reviewed workflow on main may publish, not a copy edited on a branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the tag and the release
+      actions: read # look up the CI run for the commit
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+      SHA: ${{ inputs.sha }}
+      HIGHLIGHTS: ${{ inputs.highlights }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must look like v1.2.3 or v1.2.3-rc.1, got '$VERSION'"
+            exit 1
+          fi
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character lowercase commit SHA"
+            exit 1
+          fi
+
+      - name: Check the commit is on main
+        run: |
+          # compare BASE...HEAD: "identical" or "ahead" means SHA is an ancestor of main.
+          status=$(gh api "repos/$GH_REPO/compare/$SHA...main" --jq .status)
+          if [[ "$status" != "identical" && "$status" != "ahead" ]]; then
+            echo "::error::$SHA is not on main (compare status: $status)"
+            exit 1
+          fi
+
+      - name: Check CI passed on the commit
+        run: |
+          runs=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success" \
+            --jq .total_count)
+          if [[ "$runs" -lt 1 ]]; then
+            echo "::error::no successful CI run for $SHA"
+            exit 1
+          fi
+
+      - name: Check the tag does not exist yet
+        run: |
+          if gh api "repos/$GH_REPO/git/ref/tags/$VERSION" --silent 2>/dev/null; then
+            echo "::error::tag $VERSION already exists"
+            exit 1
+          fi
+
+      - name: Create tag and release
+        run: |
+          generated=$(gh api "repos/$GH_REPO/releases/generate-notes" \
+            -f tag_name="$VERSION" -f target_commitish="$SHA" --jq .body)
+          {
+            if [[ -n "$HIGHLIGHTS" ]]; then
+              printf '%s\n\n' "$HIGHLIGHTS"
+            fi
+            printf '%s\n' "$generated"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$VERSION" --target "$SHA" --title "$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
