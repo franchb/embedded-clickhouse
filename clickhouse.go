@@ -42,7 +42,7 @@ var ErrSHA512Unavailable = errors.New("embedded-clickhouse: SHA512 checksum unav
 // ErrBinaryNotFound is returned when the ClickHouse binary cannot be located inside a downloaded archive.
 var ErrBinaryNotFound = errors.New("embedded-clickhouse: binary not found in archive")
 
-// ErrInvalidPath is returned when a destination path contains a path traversal sequence ("..").
+// ErrInvalidPath is returned when a destination path contains a ".." path segment.
 var ErrInvalidPath = errors.New("embedded-clickhouse: invalid destination path")
 
 // ErrUnexpectedAddrType is returned when the listener address is not the expected *net.TCPAddr type.
@@ -164,7 +164,7 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 		return nil, err
 	}
 
-	binPath, err := ensureBinary(cfg)
+	binPath, err := ensureBinary(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

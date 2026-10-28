@@ -140,7 +140,7 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 	}
 
 	// Resolve binary once (shared across all nodes).
-	binPath, err := ensureBinary(cfg)
+	binPath, err := ensureBinary(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

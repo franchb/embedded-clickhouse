@@ -3,10 +3,12 @@ package embeddedclickhouse
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -24,9 +26,21 @@ func isClickHouseBinaryPath(name string) bool {
 		clean == "clickhouse"
 }
 
+// ErrBinaryTooLarge is returned when the binary inside an archive exceeds maxBinaryBytes.
+var ErrBinaryTooLarge = errors.New("embedded-clickhouse: binary in archive exceeds size limit")
+
+// maxBinaryBytes caps the extracted binary. A ClickHouse binary is well under 1 GiB;
+// the cap stops a hostile or corrupt archive (e.g. a gzip bomb) from filling the disk.
+const maxBinaryBytes int64 = 4 << 30
+
 // extractClickHouseBinary extracts the clickhouse binary from a .tgz archive.
 // It looks for the file at a bin/ path (e.g., usr/bin/clickhouse).
 func extractClickHouseBinary(archivePath, destPath string) error {
+	return extractClickHouseBinaryLimit(archivePath, destPath, maxBinaryBytes)
+}
+
+// extractClickHouseBinaryLimit is extractClickHouseBinary with an explicit size cap.
+func extractClickHouseBinaryLimit(archivePath, destPath string, maxBytes int64) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("embedded-clickhouse: open archive: %w", err)
@@ -58,6 +72,12 @@ func extractClickHouseBinary(archivePath, destPath string) error {
 			continue
 		}
 
+		// tar.Reader never yields more than hdr.Size bytes for an entry, so checking
+		// the header bounds what is written to disk.
+		if hdr.Size > maxBytes {
+			return fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrBinaryTooLarge, hdr.Name, hdr.Size, maxBytes)
+		}
+
 		return writeExecutable(tr, destPath)
 	}
 
@@ -66,11 +86,15 @@ func extractClickHouseBinary(archivePath, destPath string) error {
 
 // writeExecutable writes reader content to destPath atomically via a temp file.
 func writeExecutable(r io.Reader, destPath string) error {
-	// Sanitize before any filesystem mutation to prevent path traversal.
-	destPath = filepath.Clean(destPath)
-	if strings.Contains(destPath, "..") {
+	// Reject ".." path segments before Clean can fold them away. Matching the substring
+	// would wrongly reject legitimate names such as "/data/ci..runner", and checking
+	// after Clean would miss "/safe/dir/../escape" entirely. Cache paths are absolute
+	// (see cacheDir), so a ".." segment here can only come from a crafted path.
+	if slices.Contains(strings.Split(filepath.ToSlash(destPath), "/"), "..") {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, destPath)
 	}
+
+	destPath = filepath.Clean(destPath)
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("embedded-clickhouse: create directory: %w", err)

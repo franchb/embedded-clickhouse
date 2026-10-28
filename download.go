@@ -1,12 +1,16 @@
 package embeddedclickhouse
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,8 +19,95 @@ import (
 	"time"
 )
 
-// httpClient is a shared HTTP client with a timeout to prevent indefinite hangs on slow CDNs.
-var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknoglobals
+// ErrDownloadTooLarge is returned when a download exceeds the size limit.
+var ErrDownloadTooLarge = errors.New("embedded-clickhouse: download exceeds size limit")
+
+// ErrDownloadStalled is returned when a download receives no data for downloadStallTimeout.
+var ErrDownloadStalled = errors.New("embedded-clickhouse: download stalled")
+
+const (
+	// maxDownloadBytes caps any single download (archive or raw binary). Current
+	// ClickHouse release assets are a few hundred MiB, so this leaves ample headroom
+	// while still stopping a hostile or broken mirror from filling the disk.
+	maxDownloadBytes int64 = 4 << 30
+
+	// maxChecksumBytes caps a .sha512 checksum file.
+	maxChecksumBytes int64 = 1 << 20
+
+	// downloadStallTimeout aborts a download that receives no data for this long.
+	// Unlike a whole-request timeout, it never cuts off a slow but progressing
+	// transfer of a large archive.
+	downloadStallTimeout = 2 * time.Minute
+)
+
+// httpClient is the shared HTTP client for downloads. It has no overall Timeout:
+// a whole-request deadline would abort a large archive on a slow but healthy link.
+// Hung transfers are caught by the per-download stall timer in fetch instead.
+var httpClient = &http.Client{} //nolint:gochecknoglobals // shared connection pool
+
+// fetchOptions controls a single HTTP download.
+type fetchOptions struct {
+	headers  http.Header
+	maxBytes int64
+	stall    time.Duration
+}
+
+// downloadOptions returns the fetch options for a download of up to maxBytes.
+// headers are sent only for user-chosen URLs (see Config.DownloadHeader).
+func downloadOptions(headers http.Header, maxBytes int64) fetchOptions {
+	return fetchOptions{headers: headers, maxBytes: maxBytes, stall: downloadStallTimeout}
+}
+
+// userHeaders returns the configured download headers for requests to a URL the user
+// chose. Requests to the default GitHub release URL never carry them.
+func userHeaders(cfg Config, userChosenURL bool) http.Header {
+	if !userChosenURL {
+		return nil
+	}
+
+	return cfg.httpHeaders
+}
+
+// digests holds the hex SHA256 and SHA512 of a file, computed in one pass.
+type digests struct {
+	sha256 string
+	sha512 string
+}
+
+// digester computes digests while data is written through it.
+type digester struct {
+	h256 hash.Hash
+	h512 hash.Hash
+}
+
+func newDigester() *digester {
+	return &digester{h256: sha256.New(), h512: sha512.New()}
+}
+
+func (d *digester) writer() io.Writer {
+	return io.MultiWriter(d.h256, d.h512)
+}
+
+func (d *digester) sum() digests {
+	return digests{sha256: hex.EncodeToString(d.h256.Sum(nil)), sha512: hex.EncodeToString(d.h512.Sum(nil))}
+}
+
+// fileDigests hashes path once, computing both SHA256 and SHA512.
+func fileDigests(path string) (digests, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return digests{}, fmt.Errorf("embedded-clickhouse: open for hashing: %w", err)
+	}
+	defer f.Close()
+
+	hasher := newDigester()
+
+	if _, err := io.Copy(hasher.writer(), f); err != nil {
+		return digests{}, fmt.Errorf("embedded-clickhouse: hash %s: %w", path, err)
+	}
+
+	return hasher.sum(), nil
+}
 
 // EnsureBinary resolves the ClickHouse binary described by cfg, downloading,
 // verifying, and caching it if necessary, and returns the path to the
@@ -28,15 +119,20 @@ var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknogloba
 // GitHub release download is used, with SHA verification and on-disk caching
 // (content-addressed for custom assets, version-pinned for standard releases).
 func EnsureBinary(cfg Config) (string, error) {
+	return EnsureBinaryContext(context.Background(), cfg)
+}
+
+// EnsureBinaryContext is like EnsureBinary, but aborts a download when ctx is done.
+func EnsureBinaryContext(ctx context.Context, cfg Config) (string, error) {
 	if err := cfg.validateBinarySource(); err != nil {
 		return "", err
 	}
 
-	return ensureBinary(cfg)
+	return ensureBinary(ctx, cfg)
 }
 
 // ensureBinary returns the path to a ClickHouse binary, downloading it if necessary.
-func ensureBinary(cfg Config) (string, error) {
+func ensureBinary(ctx context.Context, cfg Config) (string, error) {
 	// Priority: BinaryPath > CustomArchivePath > CustomArchiveURL > standard download.
 	if cfg.binaryPath != "" {
 		if _, err := os.Stat(cfg.binaryPath); err != nil {
@@ -51,10 +147,10 @@ func ensureBinary(cfg Config) (string, error) {
 	}
 
 	if cfg.customArchiveURL != "" {
-		return ensureCustomArchiveFromURL(cfg)
+		return ensureCustomArchiveFromURL(ctx, cfg)
 	}
 
-	return ensureStandardBinary(cfg)
+	return ensureStandardBinary(ctx, cfg)
 }
 
 // ensureCustomArchiveFromPath extracts a ClickHouse binary from a local archive.
@@ -63,13 +159,15 @@ func ensureCustomArchiveFromPath(cfg Config) (string, error) {
 		return "", fmt.Errorf("embedded-clickhouse: custom archive not found: %w", err)
 	}
 
-	if err := verifyCustomArchive(cfg.customArchivePath, cfg); err != nil {
+	// One read computes both digests: they verify the archive and the SHA256 doubles
+	// as the content-addressed cache key. (The archive must be hashed even on a warm
+	// cache, because the key is derived from its content.)
+	sums, err := fileDigests(cfg.customArchivePath)
+	if err != nil {
 		return "", err
 	}
 
-	// Content-addressed cache key: hash the file content.
-	contentHash, err := fileSHA256(cfg.customArchivePath)
-	if err != nil {
+	if err := verifyCustomArchive(sums, cfg); err != nil {
 		return "", err
 	}
 
@@ -78,7 +176,7 @@ func ensureCustomArchiveFromPath(cfg Config) (string, error) {
 		return "", err
 	}
 
-	binPath := customCachedBinaryPath(dir, contentHash)
+	binPath := customCachedBinaryPath(dir, sums.sha256)
 
 	// Lock-free fast path.
 	if _, err := os.Stat(binPath); err == nil {
@@ -113,7 +211,7 @@ func ensureCustomArchiveFromPath(cfg Config) (string, error) {
 }
 
 // ensureCustomArchiveFromURL downloads and extracts a ClickHouse binary from a custom URL.
-func ensureCustomArchiveFromURL(cfg Config) (string, error) {
+func ensureCustomArchiveFromURL(ctx context.Context, cfg Config) (string, error) {
 	dir, err := cacheDir(cfg.cachePath)
 	if err != nil {
 		return "", err
@@ -156,11 +254,14 @@ func ensureCustomArchiveFromURL(cfg Config) (string, error) {
 
 	defer os.Remove(archivePath)
 
-	if err := downloadFile(cfg.customArchiveURL, archivePath); err != nil {
+	opts := downloadOptions(userHeaders(cfg, true), maxDownloadBytes)
+
+	sums, err := downloadFile(ctx, cfg.customArchiveURL, archivePath, opts)
+	if err != nil {
 		return "", err
 	}
 
-	if err := verifyCustomArchive(archivePath, cfg); err != nil {
+	if err := verifyCustomArchive(sums, cfg); err != nil {
 		return "", err
 	}
 
@@ -174,13 +275,13 @@ func ensureCustomArchiveFromURL(cfg Config) (string, error) {
 }
 
 // ensureStandardBinary handles the standard GitHub release download path.
-func ensureStandardBinary(cfg Config) (string, error) {
+func ensureStandardBinary(ctx context.Context, cfg Config) (string, error) {
 	dir, err := cacheDir(cfg.cachePath)
 	if err != nil {
 		return "", err
 	}
 
-	binPath := cachedBinaryPath(dir, cfg.version)
+	binPath := cachedBinaryPath(dir, cfg.version, cfg.binaryRepositoryURL)
 
 	// Lock-free fast path.
 	if _, err := os.Stat(binPath); err == nil {
@@ -214,11 +315,11 @@ func ensureStandardBinary(cfg Config) (string, error) {
 
 	switch asset.assetType {
 	case assetArchive:
-		if err := downloadAndExtract(cfg, url, asset, binPath); err != nil {
+		if err := downloadAndExtract(ctx, cfg, url, asset, binPath); err != nil {
 			return "", err
 		}
 	case assetRawBinary:
-		if err := downloadRawBinary(cfg, asset, url, binPath); err != nil {
+		if err := downloadRawBinary(ctx, cfg, asset, url, binPath); err != nil {
 			return "", err
 		}
 	default:
@@ -230,7 +331,7 @@ func ensureStandardBinary(cfg Config) (string, error) {
 	return binPath, nil
 }
 
-func downloadAndExtract(cfg Config, url string, asset platformAsset, binPath string) error {
+func downloadAndExtract(ctx context.Context, cfg Config, url string, asset platformAsset, binPath string) error {
 	dir, err := cacheDir(cfg.cachePath)
 	if err != nil {
 		return err
@@ -250,21 +351,29 @@ func downloadAndExtract(cfg Config, url string, asset platformAsset, binPath str
 
 	defer os.Remove(archivePath)
 
-	if err := downloadFile(url, archivePath); err != nil {
+	headers := userHeaders(cfg, cfg.binaryRepositoryURL != "")
+
+	sums, err := downloadFile(ctx, url, archivePath, downloadOptions(headers, maxDownloadBytes))
+	if err != nil {
 		return err
 	}
 
 	// Verify SHA512 for archives.
-	sha512url := sha512URL(cfg.binaryRepositoryURL, cfg.version, asset)
+	check := checksumSource{
+		url:          sha512URL(cfg.binaryRepositoryURL, cfg.version, asset),
+		filename:     asset.filename,
+		allowMissing: cfg.allowMissingChecksum,
+		headers:      headers,
+	}
 
-	if err := verifySHA512(archivePath, sha512url, asset.filename, cfg.allowMissingChecksum, cfg.logger); err != nil {
+	if err := verifySHA512(ctx, sums.sha512, check, cfg.logger); err != nil {
 		return err
 	}
 
 	return extractClickHouseBinary(archivePath, binPath)
 }
 
-func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) error {
+func downloadRawBinary(ctx context.Context, cfg Config, asset platformAsset, url, binPath string) error {
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		return fmt.Errorf("embedded-clickhouse: create cache dir: %w", err)
 	}
@@ -279,17 +388,25 @@ func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) err
 
 	defer os.Remove(tmp)
 
-	if err := downloadFile(url, tmp); err != nil {
+	headers := userHeaders(cfg, cfg.binaryRepositoryURL != "")
+
+	sums, err := downloadFile(ctx, url, tmp, downloadOptions(headers, maxDownloadBytes))
+	if err != nil {
 		return err
 	}
-
-	sha512url := sha512URL(cfg.binaryRepositoryURL, cfg.version, asset)
 
 	// Raw binaries (macOS) are published without a .sha512 upstream, so a missing
 	// checksum is expected here and must not fail the download — unlike archives,
 	// which always ship one and are verified strictly. A checksum that IS present
 	// is still verified regardless.
-	if err := verifySHA512(tmp, sha512url, asset.filename, true, cfg.logger); err != nil {
+	check := checksumSource{
+		url:          sha512URL(cfg.binaryRepositoryURL, cfg.version, asset),
+		filename:     asset.filename,
+		allowMissing: true,
+		headers:      headers,
+	}
+
+	if err := verifySHA512(ctx, sums.sha512, check, cfg.logger); err != nil {
 		return err
 	}
 
@@ -304,75 +421,147 @@ func downloadRawBinary(cfg Config, asset platformAsset, url, binPath string) err
 	return nil
 }
 
-func downloadFile(url, destPath string) error {
-	resp, err := httpClient.Get(url) //nolint:noctx // URL is constructed internally
-	if err != nil {
-		return fmt.Errorf("embedded-clickhouse: download %s: %w", redactURL(url), redactURLError(err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: %s: HTTP %d", ErrDownloadFailed, redactURL(url), resp.StatusCode)
-	}
-
+// downloadFile downloads rawURL to destPath and returns the file's digests, computed
+// while the data streams in (no second read of the file).
+func downloadFile(ctx context.Context, rawURL, destPath string, opts fetchOptions) (digests, error) {
 	out, err := os.Create(destPath)
 	if err != nil {
-		return fmt.Errorf("embedded-clickhouse: create %s: %w", destPath, err)
+		return digests{}, fmt.Errorf("embedded-clickhouse: create %s: %w", destPath, err)
 	}
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		out.Close()
+	hasher := newDigester()
+
+	status, err := fetch(ctx, rawURL, io.MultiWriter(out, hasher.writer()), opts)
+	if closeErr := out.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("embedded-clickhouse: close %s: %w", destPath, closeErr)
+	}
+
+	if err == nil && status != http.StatusOK {
+		err = fmt.Errorf("%w: %s: HTTP %d", ErrDownloadFailed, redactURL(rawURL), status)
+	}
+
+	if err != nil {
 		os.Remove(destPath)
-
-		return fmt.Errorf("embedded-clickhouse: write %s: %w", destPath, err)
+		return digests{}, err
 	}
 
-	if err := out.Close(); err != nil {
-		os.Remove(destPath)
-		return fmt.Errorf("embedded-clickhouse: close %s: %w", destPath, err)
-	}
-
-	return nil
+	return hasher.sum(), nil
 }
 
-func verifySHA512(filePath, sha512URL, expectedFilename string, allowMissing bool, logger io.Writer) error {
-	resp, err := httpClient.Get(sha512URL) //nolint:noctx // URL is constructed internally
+// fetch GETs rawURL and, on HTTP 200, copies the body into dst. A non-200 status is
+// returned with a nil error and nothing written, so callers decide what it means.
+//
+// The download is aborted with ErrDownloadStalled if no data arrives for opts.stall
+// (including while waiting for the response headers), and with ErrDownloadTooLarge
+// once more than opts.maxBytes would be written. Every error masks credentials in
+// the URL.
+func fetch(ctx context.Context, rawURL string, dst io.Writer, opts fetchOptions) (int, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
+	stall := time.AfterFunc(opts.stall, func() { cancel(ErrDownloadStalled) })
+	defer stall.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return fmt.Errorf("embedded-clickhouse: download SHA512 %s: %w", redactURL(sha512URL), redactURLError(err))
+		return 0, fmt.Errorf("embedded-clickhouse: download %s: %w", redactURL(rawURL), redactURLError(err))
+	}
+
+	maps.Copy(req.Header, opts.headers)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fetchError(ctx, rawURL, opts.stall, redactURLError(err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if !allowMissing {
+		return resp.StatusCode, nil
+	}
+
+	if resp.ContentLength > opts.maxBytes {
+		return 0, fmt.Errorf("%w: %s: %d bytes (limit %d)", ErrDownloadTooLarge, redactURL(rawURL),
+			resp.ContentLength, opts.maxBytes)
+	}
+
+	body := &stallResetReader{r: resp.Body, timer: stall, timeout: opts.stall}
+
+	n, err := io.Copy(dst, io.LimitReader(body, opts.maxBytes+1))
+	if err != nil {
+		return 0, fetchError(ctx, rawURL, opts.stall, err)
+	}
+
+	if n > opts.maxBytes {
+		return 0, fmt.Errorf("%w: %s: more than %d bytes", ErrDownloadTooLarge, redactURL(rawURL), opts.maxBytes)
+	}
+
+	return resp.StatusCode, nil
+}
+
+// fetchError wraps a transfer error, reporting a stall as ErrDownloadStalled rather
+// than as the bare "context canceled" the transport surfaces.
+func fetchError(ctx context.Context, rawURL string, stall time.Duration, err error) error {
+	if cause := context.Cause(ctx); errors.Is(cause, ErrDownloadStalled) {
+		return fmt.Errorf("%w: %s: no data for %v", ErrDownloadStalled, redactURL(rawURL), stall)
+	}
+
+	return fmt.Errorf("embedded-clickhouse: download %s: %w", redactURL(rawURL), err)
+}
+
+// stallResetReader re-arms the stall timer every time data arrives.
+type stallResetReader struct {
+	r       io.Reader
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func (s *stallResetReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.timeout)
+	}
+
+	return n, err //nolint:wrapcheck // transparent reader; io.EOF must pass through unwrapped
+}
+
+// checksumSource describes where to fetch a .sha512 file and how strictly to treat it.
+type checksumSource struct {
+	url          string
+	filename     string
+	allowMissing bool
+	headers      http.Header
+}
+
+// verifySHA512 fetches the published checksum and compares it with actualSHA512
+// (already computed during the download).
+func verifySHA512(ctx context.Context, actualSHA512 string, src checksumSource, logger io.Writer) error {
+	var body bytes.Buffer
+
+	status, err := fetch(ctx, src.url, &body, downloadOptions(src.headers, maxChecksumBytes))
+	if err != nil {
+		return fmt.Errorf("embedded-clickhouse: download SHA512: %w", err)
+	}
+
+	if status != http.StatusOK {
+		if !src.allowMissing {
 			// Fail closed: a missing checksum is a verification failure by default.
-			return fmt.Errorf("%w: %s: HTTP %d", ErrSHA512Unavailable, expectedFilename, resp.StatusCode)
+			return fmt.Errorf("%w: %s: HTTP %d", ErrSHA512Unavailable, src.filename, status)
 		}
 
 		// Opt-in fallback: skip verification but warn the caller.
 		logf(logger, "embedded-clickhouse: SHA512 not available for %s (HTTP %d), skipping verification\n",
-			expectedFilename, resp.StatusCode)
+			src.filename, status)
 
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("embedded-clickhouse: read SHA512: %w", err)
-	}
-
-	expectedHash, err := parseSHA512(string(body), expectedFilename)
+	expectedHash, err := parseSHA512(body.String(), src.filename)
 	if err != nil {
 		return err
 	}
 
-	actualHash, err := fileSHA512(filePath)
-	if err != nil {
-		return err
-	}
-
-	if actualHash != expectedHash {
-		os.Remove(filePath)
-		return fmt.Errorf("%w: %s: expected %s, got %s", ErrSHA512Mismatch, expectedFilename, expectedHash, actualHash)
+	if actualSHA512 != expectedHash {
+		return fmt.Errorf("%w: %s: expected %s, got %s", ErrSHA512Mismatch, src.filename, expectedHash, actualSHA512)
 	}
 
 	return nil
@@ -439,64 +628,18 @@ func isSHA512Hex(s string) bool {
 	return err == nil
 }
 
-func fileSHA512(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: open for SHA512: %w", err)
-	}
-	defer f.Close()
-
-	h := sha512.New()
-
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: compute SHA512: %w", err)
+// verifyCustomArchive checks the archive's digests against the user-provided SHA256
+// and/or SHA512. If neither hash is configured, verification is skipped.
+func verifyCustomArchive(sums digests, cfg Config) error {
+	if cfg.sha256 != "" && sums.sha256 != strings.ToLower(cfg.sha256) {
+		return fmt.Errorf("%w: expected %s, got %s", ErrSHA256Mismatch, cfg.sha256, sums.sha256)
 	}
 
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// verifyCustomArchive checks the archive against user-provided SHA256 and/or SHA512 hashes.
-// If neither hash is configured, verification is skipped.
-func verifyCustomArchive(archivePath string, cfg Config) error {
-	if cfg.sha256 != "" {
-		actual, err := fileSHA256(archivePath)
-		if err != nil {
-			return err
-		}
-
-		if actual != strings.ToLower(cfg.sha256) {
-			return fmt.Errorf("%w: expected %s, got %s", ErrSHA256Mismatch, cfg.sha256, actual)
-		}
-	}
-
-	if cfg.sha512hash != "" {
-		actual, err := fileSHA512(archivePath)
-		if err != nil {
-			return err
-		}
-
-		if actual != strings.ToLower(cfg.sha512hash) {
-			return fmt.Errorf("%w: expected %s, got %s", ErrSHA512Mismatch, cfg.sha512hash, actual)
-		}
+	if cfg.sha512hash != "" && sums.sha512 != strings.ToLower(cfg.sha512hash) {
+		return fmt.Errorf("%w: expected %s, got %s", ErrSHA512Mismatch, cfg.sha512hash, sums.sha512)
 	}
 
 	return nil
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: open for SHA256: %w", err)
-	}
-	defer f.Close()
-
-	h := sha256.New()
-
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("embedded-clickhouse: compute SHA256: %w", err)
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func logf(w io.Writer, format string, args ...any) {

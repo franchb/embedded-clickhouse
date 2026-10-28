@@ -23,6 +23,23 @@ import (
 // testRawBinaryName is a stand-in raw-binary asset filename used across download tests.
 const testRawBinaryName = "clickhouse-macos"
 
+// testFetchOptions returns download options with the production limits.
+func testFetchOptions() fetchOptions {
+	return downloadOptions(nil, maxDownloadBytes)
+}
+
+// mustDigests hashes a file or fails the test.
+func mustDigests(t *testing.T, path string) digests {
+	t.Helper()
+
+	d, err := fileDigests(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return d
+}
+
 // testArchiveFilename is a stand-in archive filename used across the SHA512 parse tests.
 const testArchiveFilename = "myfile.tgz"
 
@@ -38,7 +55,7 @@ func TestDownloadFile(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "downloaded")
 
-	err := downloadFile(ts.URL, dest)
+	_, err := downloadFile(t.Context(), ts.URL, dest, testFetchOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +80,7 @@ func TestDownloadFile_HTTPError(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "downloaded")
 
-	err := downloadFile(ts.URL, dest)
+	_, err := downloadFile(t.Context(), ts.URL, dest, testFetchOptions())
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
@@ -154,7 +171,7 @@ func TestDownloadFile_HTTPError_RedactsCredentials(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "downloaded")
 
-	err = downloadFile(credURL, dest)
+	_, err = downloadFile(t.Context(), credURL, dest, testFetchOptions())
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
@@ -181,7 +198,7 @@ func TestDownloadFile_TransportError_RedactsCredentials(t *testing.T) {
 	// 127.0.0.1:1 is never bound, so the dial is refused immediately.
 	credURL := "http://oauth2:glpat-SECRET@127.0.0.1:1/clickhouse.tar.gz?private_token=SECRET2"
 
-	err := downloadFile(credURL, filepath.Join(t.TempDir(), "downloaded"))
+	_, err := downloadFile(t.Context(), credURL, filepath.Join(t.TempDir(), "downloaded"), testFetchOptions())
 	if err == nil {
 		t.Fatal("expected a transport error dialing a dead port")
 	}
@@ -199,7 +216,7 @@ func TestVerifySHA512_TransportError_RedactsCredentials(t *testing.T) {
 
 	credURL := "http://oauth2:glpat-SECRET@127.0.0.1:1/clickhouse.tar.gz.sha512?private_token=SECRET2"
 
-	err := verifySHA512(filepath.Join(t.TempDir(), "file"), credURL, "clickhouse.tar.gz", false, io.Discard)
+	err := verifySHA512(t.Context(), "", checksumSource{url: credURL, filename: "clickhouse.tar.gz", allowMissing: false, headers: nil}, io.Discard)
 	if err == nil {
 		t.Fatal("expected a transport error dialing a dead port")
 	}
@@ -303,7 +320,7 @@ func TestVerifySHA512(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz", false, nil)
+	err := verifySHA512(t.Context(), mustDigests(t, filePath).sha512, checksumSource{url: ts.URL, filename: "testfile.tgz", allowMissing: false, headers: nil}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +342,7 @@ func TestVerifySHA512_Mismatch(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	err := verifySHA512(filePath, ts.URL, "testfile.tgz", false, nil)
+	err := verifySHA512(t.Context(), mustDigests(t, filePath).sha512, checksumSource{url: ts.URL, filename: "testfile.tgz", allowMissing: false, headers: nil}, nil)
 	if err == nil {
 		t.Fatal("expected SHA512 mismatch error")
 	}
@@ -344,7 +361,7 @@ func TestEnsureBinary_ExplicitPath(t *testing.T) {
 
 	cfg := DefaultConfig().BinaryPath(binPath)
 
-	got, err := ensureBinary(cfg)
+	got, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +401,7 @@ func TestEnsureBinary_ExplicitPathNotFound(t *testing.T) {
 
 	cfg := DefaultConfig().BinaryPath("/nonexistent/clickhouse")
 
-	_, err := ensureBinary(cfg)
+	_, err := ensureBinary(t.Context(), cfg)
 	if err == nil {
 		t.Fatal("expected error for missing binary")
 	}
@@ -397,7 +414,7 @@ func TestEnsureBinary_CachedBinary(t *testing.T) {
 	cfg := DefaultConfig().CachePath(tmpDir)
 
 	// Pre-place a cached binary.
-	binPath := cachedBinaryPath(tmpDir, cfg.version)
+	binPath := cachedBinaryPath(tmpDir, cfg.version, cfg.binaryRepositoryURL)
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +423,7 @@ func TestEnsureBinary_CachedBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := ensureBinary(cfg)
+	got, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,10 +443,7 @@ func TestFileSHA512(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := fileSHA512(tmpFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := mustDigests(t, tmpFile).sha512
 
 	h := sha512.Sum512(content)
 
@@ -461,7 +475,7 @@ func TestDownloadRawBinary_WithVerification(t *testing.T) {
 	asset := platformAsset{filename: filename, assetType: assetRawBinary}
 	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir)
 
-	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+	if err := downloadRawBinary(t.Context(), cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -502,7 +516,7 @@ func TestDownloadRawBinary_SHA512Unavailable_SkippedByDefault(t *testing.T) {
 	// Default config (no AllowMissingChecksum): the raw-binary path still proceeds.
 	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir).Logger(io.Discard)
 
-	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+	if err := downloadRawBinary(t.Context(), cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
 		t.Fatalf("raw binary with no upstream checksum should succeed by default, got: %v", err)
 	}
 
@@ -542,7 +556,7 @@ func TestDownloadRawBinary_SHA512Unavailable_AllowMissing(t *testing.T) {
 		AllowMissingChecksum(true).
 		Logger(io.Discard)
 
-	if err := downloadRawBinary(cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
+	if err := downloadRawBinary(t.Context(), cfg, asset, ts.URL+"/"+filename, binPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -578,7 +592,7 @@ func TestDownloadAndExtract_SHA512Unavailable_StrictFails(t *testing.T) {
 	binPath := filepath.Join(tmpDir, "clickhouse")
 	cfg := DefaultConfig().BinaryRepositoryURL(ts.URL).CachePath(tmpDir).Logger(io.Discard)
 
-	err := downloadAndExtract(cfg, ts.URL+"/"+asset.filename, asset, binPath)
+	err := downloadAndExtract(t.Context(), cfg, ts.URL+"/"+asset.filename, asset, binPath)
 	if !errors.Is(err, ErrSHA512Unavailable) {
 		t.Fatalf("expected ErrSHA512Unavailable for an archive with no checksum, got: %v", err)
 	}
@@ -648,14 +662,14 @@ func TestEnsureStandardBinary_ConcurrentSameProcess(t *testing.T) {
 
 			<-start
 
-			paths[idx], errs[idx] = ensureBinary(cfg)
+			paths[idx], errs[idx] = ensureBinary(t.Context(), cfg)
 		}(i)
 	}
 
 	close(start)
 	wg.Wait()
 
-	want := cachedBinaryPath(cacheDir, cfg.version)
+	want := cachedBinaryPath(cacheDir, cfg.version, cfg.binaryRepositoryURL)
 
 	for i := range goroutines {
 		if errs[i] != nil {
@@ -746,7 +760,7 @@ func TestEnsureBinary_CustomArchivePath(t *testing.T) {
 		CachePath(cacheDir).
 		Logger(io.Discard)
 
-	got, err := ensureBinary(cfg)
+	got, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +780,7 @@ func TestEnsureBinary_CustomArchivePath(t *testing.T) {
 	}
 
 	// Second call should return cached path.
-	got2, err := ensureBinary(cfg)
+	got2, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +797,7 @@ func TestEnsureBinary_CustomArchivePath_NotFound(t *testing.T) {
 		CustomArchivePath("/nonexistent/archive.tar.gz").
 		Logger(io.Discard)
 
-	_, err := ensureBinary(cfg)
+	_, err := ensureBinary(t.Context(), cfg)
 	if err == nil {
 		t.Fatal("expected error for missing archive")
 	}
@@ -810,7 +824,7 @@ func TestEnsureBinary_CustomArchivePath_SHA256(t *testing.T) {
 		CachePath(filepath.Join(tmpDir, "cache")).
 		Logger(io.Discard)
 
-	_, err = ensureBinary(cfg)
+	_, err = ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +842,7 @@ func TestEnsureBinary_CustomArchivePath_SHA256Mismatch(t *testing.T) {
 		CachePath(filepath.Join(tmpDir, "cache")).
 		Logger(io.Discard)
 
-	_, err := ensureBinary(cfg)
+	_, err := ensureBinary(t.Context(), cfg)
 	if err == nil {
 		t.Fatal("expected SHA256 mismatch error")
 	}
@@ -861,7 +875,7 @@ func TestEnsureBinary_CustomArchiveURL(t *testing.T) {
 		CachePath(cacheDir).
 		Logger(io.Discard)
 
-	got, err := ensureBinary(cfg)
+	got, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +895,7 @@ func TestEnsureBinary_CustomArchiveURL(t *testing.T) {
 	}
 
 	// Second call should use cache.
-	got2, err := ensureBinary(cfg)
+	got2, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +930,7 @@ func TestEnsureBinary_CustomArchiveURL_WithSHA256(t *testing.T) {
 		CachePath(filepath.Join(tmpDir, "cache")).
 		Logger(io.Discard)
 
-	_, err = ensureBinary(cfg)
+	_, err = ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -944,7 +958,7 @@ func TestEnsureBinary_CustomArchiveURL_SHA256Mismatch(t *testing.T) {
 		CachePath(filepath.Join(tmpDir, "cache")).
 		Logger(io.Discard)
 
-	_, err = ensureBinary(cfg)
+	_, err = ensureBinary(t.Context(), cfg)
 	if err == nil {
 		t.Fatal("expected SHA256 mismatch error")
 	}
@@ -974,7 +988,7 @@ func TestEnsureBinary_Precedence(t *testing.T) {
 		CachePath(filepath.Join(tmpDir, "cache")).
 		Logger(io.Discard)
 
-	got, err := ensureBinary(cfg)
+	got, err := ensureBinary(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,10 +1008,7 @@ func TestFileSHA256(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := fileSHA256(tmpFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := mustDigests(t, tmpFile).sha256
 
 	h := sha256.Sum256(content)
 	want := hex.EncodeToString(h[:])
@@ -1024,7 +1035,7 @@ func TestVerifyCustomArchive_BothHashes(t *testing.T) {
 		SHA256(hex.EncodeToString(sha256Hash[:])).
 		SHA512(hex.EncodeToString(sha512Hash[:]))
 
-	if err := verifyCustomArchive(tmpFile, cfg); err != nil {
+	if err := verifyCustomArchive(mustDigests(t, tmpFile), cfg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1039,7 +1050,7 @@ func TestVerifyCustomArchive_NoHashes(t *testing.T) {
 
 	cfg := DefaultConfig()
 
-	if err := verifyCustomArchive(tmpFile, cfg); err != nil {
+	if err := verifyCustomArchive(mustDigests(t, tmpFile), cfg); err != nil {
 		t.Fatal("expected no error when no hashes configured")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"os"
 	"time"
 )
@@ -50,6 +51,7 @@ type Config struct {
 	sha256               string
 	sha512hash           string
 	allowMissingChecksum bool
+	httpHeaders          http.Header
 	startTimeout         time.Duration
 	stopTimeout          time.Duration
 	logger               io.Writer
@@ -152,6 +154,24 @@ func (c Config) SHA512(hash string) Config {
 // checksum for those, so a missing one is always tolerated regardless of this setting.
 func (c Config) AllowMissingChecksum(allow bool) Config {
 	c.allowMissingChecksum = allow
+	return c
+}
+
+// DownloadHeader adds an HTTP header (for example "Authorization" or "PRIVATE-TOKEN")
+// to download requests, so a private mirror's credentials need not ride in the URL.
+// Headers are sent only to user-chosen sources: CustomArchiveURL and
+// BinaryRepositoryURL (including its .sha512 files), never to the default GitHub
+// release URL. On a redirect to a different domain, net/http drops sensitive headers
+// such as Authorization and Cookie. Calling it again with the same key adds a value.
+func (c Config) DownloadHeader(key, value string) Config {
+	h := c.httpHeaders.Clone()
+	if h == nil {
+		h = make(http.Header)
+	}
+
+	h.Add(key, value)
+	c.httpHeaders = h
+
 	return c
 }
 
