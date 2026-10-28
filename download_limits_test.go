@@ -165,6 +165,85 @@ func TestDownloadHeader_SentToCustomArchiveURL(t *testing.T) {
 	assert.Equal(t, []string{"glpat-x"}, gotToken)
 }
 
+// TestDownloadHeader_DroppedOnCrossHostRedirect: a registry that redirects to another
+// host (e.g. object storage) must not receive the credentials meant for the registry.
+// PRIVATE-TOKEN is not on net/http's own sensitive-header list, so without the redirect
+// policy it would be forwarded.
+func TestDownloadHeader_DroppedOnCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var storageAuth, storageToken []string
+
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		storageAuth = r.Header.Values("Authorization")
+		storageToken = r.Header.Values("Private-Token")
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer storage.Close()
+
+	var registryToken []string
+
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		registryToken = r.Header.Values("Private-Token")
+		http.Redirect(w, r, storage.URL+"/blob", http.StatusFound)
+	}))
+	defer registry.Close()
+
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer s3cret")
+	headers.Set("Private-Token", "glpat-x")
+
+	var buf bytes.Buffer
+
+	status, err := fetch(t.Context(), registry.URL+"/pkg", &buf, downloadOptions(headers, maxDownloadBytes))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "payload", buf.String())
+
+	assert.Equal(t, []string{"glpat-x"}, registryToken, "the chosen host still gets the header")
+	assert.Empty(t, storageToken, "custom header leaked across a cross-host redirect")
+	assert.Empty(t, storageAuth, "Authorization leaked across a cross-host redirect")
+}
+
+// TestDownloadHeader_KeptOnSameHostRedirect: a redirect within the chosen host keeps
+// the headers, so a registry's own path redirects still authenticate.
+func TestDownloadHeader_KeptOnSameHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var finalToken []string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pkg", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/blob", http.StatusFound)
+	})
+	mux.HandleFunc("/blob", func(w http.ResponseWriter, r *http.Request) {
+		finalToken = r.Header.Values("Private-Token")
+		_, _ = w.Write([]byte("payload"))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	headers := http.Header{}
+	headers.Set("Private-Token", "glpat-x")
+
+	_, err := fetch(t.Context(), ts.URL+"/pkg", &bytes.Buffer{}, downloadOptions(headers, maxDownloadBytes))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"glpat-x"}, finalToken)
+}
+
+func TestStripHeadersOffOrigin_RedirectLimit(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/again", http.StatusFound)
+	}))
+	defer ts.Close()
+
+	_, err := fetch(t.Context(), ts.URL, &bytes.Buffer{}, downloadOptions(nil, maxDownloadBytes))
+	require.ErrorIs(t, err, errTooManyRedirects)
+}
+
 func TestDownloadHeader_NotSentToDefaultSource(t *testing.T) {
 	t.Parallel()
 

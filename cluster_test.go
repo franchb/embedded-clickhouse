@@ -195,61 +195,55 @@ func TestCluster_ClusterManagedGuard(t *testing.T) {
 	require.ErrorIs(t, node.Stop(), ErrClusterManaged)
 }
 
-func TestAllocateClusterNodePorts(t *testing.T) {
-	t.Parallel()
+// assertDistinctClusterPorts fails on a zero or duplicate port anywhere in the cluster.
+func assertDistinctClusterPorts(t *testing.T, nodes []clusterNodePorts) {
+	t.Helper()
 
-	np, err := allocateClusterNodePorts()
-	require.NoError(t, err)
-	assert.NotZero(t, np.TCP)
-	assert.NotZero(t, np.HTTP)
-	assert.NotZero(t, np.Interserver)
-	assert.NotZero(t, np.Keeper)
-	assert.NotZero(t, np.KeeperRaft)
+	seen := make(map[uint32]bool, len(nodes)*portsPerClusterNode)
 
-	// All ports should be distinct.
-	ports := []uint32{np.TCP, np.HTTP, np.Interserver, np.Keeper, np.KeeperRaft}
-	seen := make(map[uint32]bool, len(ports))
+	for i, np := range nodes {
+		for _, port := range []uint32{np.TCP, np.HTTP, np.Interserver, np.Keeper, np.KeeperRaft} {
+			if port == 0 {
+				t.Errorf("node %d: zero port in %+v", i, np)
+			}
 
-	for _, p := range ports {
-		if seen[p] {
-			t.Errorf("duplicate port: %d", p)
+			if seen[port] {
+				t.Errorf("node %d: duplicate port %d", i, port)
+			}
+
+			seen[port] = true
 		}
-
-		seen[p] = true
 	}
 }
 
-// TestAllocateClusterNodePorts_AlwaysDistinct guards against regressing to
-// sequential bind-and-close allocation, which can hand back a just-freed
-// ephemeral port and produce a duplicate within a node's 5 ports. Distinctness
-// is guaranteed by construction (allocatePorts holds every listener open), but
-// allocating concurrently churns the ephemeral range as an extra stress check.
-func TestAllocateClusterNodePorts_AlwaysDistinct(t *testing.T) {
+func TestAllocateClusterPorts(t *testing.T) {
 	t.Parallel()
 
-	const iterations = 200
+	nodes, err := allocateClusterPorts(3)
+	require.NoError(t, err)
+	require.Len(t, nodes, 3)
+	assertDistinctClusterPorts(t, nodes)
+}
+
+// TestAllocateClusterPorts_AlwaysDistinct churns the ephemeral range concurrently;
+// ports must stay distinct both within a node and across the cluster's nodes.
+func TestAllocateClusterPorts_AlwaysDistinct(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 100
 
 	var wg sync.WaitGroup
 
 	for range iterations {
 		wg.Go(func() {
-			np, err := allocateClusterNodePorts()
+			nodes, err := allocateClusterPorts(3)
 			if err != nil {
-				t.Errorf("allocate cluster node ports: %v", err)
+				t.Errorf("allocate cluster ports: %v", err)
 
 				return
 			}
 
-			ports := []uint32{np.TCP, np.HTTP, np.Interserver, np.Keeper, np.KeeperRaft}
-			seen := make(map[uint32]bool, len(ports))
-
-			for _, port := range ports {
-				if seen[port] {
-					t.Errorf("duplicate port %d in %+v", port, np)
-				}
-
-				seen[port] = true
-			}
+			assertDistinctClusterPorts(t, nodes)
 		})
 	}
 

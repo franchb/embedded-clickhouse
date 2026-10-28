@@ -43,7 +43,42 @@ const (
 // httpClient is the shared HTTP client for downloads. It has no overall Timeout:
 // a whole-request deadline would abort a large archive on a slow but healthy link.
 // Hung transfers are caught by the per-download stall timer in fetch instead.
-var httpClient = &http.Client{} //nolint:gochecknoglobals // shared connection pool
+var httpClient = &http.Client{CheckRedirect: stripHeadersOffOrigin} //nolint:gochecknoglobals // shared pool
+
+// maxRedirects matches net/http's default redirect limit.
+const maxRedirects = 10
+
+// errTooManyRedirects is returned when a download redirects more than maxRedirects times.
+var errTooManyRedirects = errors.New("embedded-clickhouse: stopped after 10 redirects")
+
+// stripHeadersOffOrigin keeps DownloadHeader values (credentials such as PRIVATE-TOKEN)
+// on the host the user chose. net/http copies the original request's headers onto every
+// redirect before calling CheckRedirect, and only strips its own short list of sensitive
+// headers (Authorization, Cookie, ...) when the domain changes; a custom header would
+// otherwise follow a redirect to any host, e.g. object storage behind a package registry.
+// Once the chain leaves the original host, every header from the original request is
+// removed for the rest of the chain. fetch sets no other headers on the original request,
+// so exactly the configured ones are dropped.
+func stripHeadersOffOrigin(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errTooManyRedirects
+	}
+
+	origin := via[0].URL.Host
+
+	leftOrigin := req.URL.Host != origin
+	for _, hop := range via[1:] {
+		leftOrigin = leftOrigin || hop.URL.Host != origin
+	}
+
+	if leftOrigin {
+		for key := range via[0].Header {
+			req.Header.Del(key)
+		}
+	}
+
+	return nil
+}
 
 // fetchOptions controls a single HTTP download.
 type fetchOptions struct {

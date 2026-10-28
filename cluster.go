@@ -144,16 +144,10 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 		return nil, err
 	}
 
-	// Allocate all ports upfront.
-	ports := make([]clusterNodePorts, replicas)
-
-	for i := range replicas {
-		np, allocErr := allocateClusterNodePorts()
-		if allocErr != nil {
-			return nil, allocErr
-		}
-
-		ports[i] = np
+	// Allocate every node's ports in one batch, so no port repeats within or across nodes.
+	ports, err := allocateClusterPorts(replicas)
+	if err != nil {
+		return nil, err
 	}
 
 	topo := buildClusterTopology(ports, cfg.settings)
@@ -317,24 +311,25 @@ func (c *Cluster) checkStartableLocked() error {
 // TCP, HTTP, interserver, Keeper, and Keeper Raft.
 const portsPerClusterNode = 5
 
-// allocateClusterNodePorts allocates the distinct ports needed for a single
-// cluster node. The ports must not collide with one another, so they are
-// allocated as a batch with allocatePorts (which holds all listeners open at
-// once); allocating them via separate allocatePort calls could hand back the
-// same just-freed ephemeral port twice.
-func allocateClusterNodePorts() (clusterNodePorts, error) {
-	ports, err := allocatePorts(portsPerClusterNode)
+// allocateClusterPorts allocates the ports for every node of a cluster. All
+// replicas × portsPerClusterNode ports come from a single allocatePorts batch, which
+// holds every listener open until all are bound, so no port can repeat within a node
+// or across nodes. Allocating node by node would release one node's ports before the
+// next node's are drawn, letting the kernel hand the same port out twice.
+func allocateClusterPorts(replicas int) ([]clusterNodePorts, error) {
+	all, err := allocatePorts(replicas * portsPerClusterNode)
 	if err != nil {
-		return clusterNodePorts{}, err
+		return nil, err
 	}
 
-	return clusterNodePorts{
-		TCP:         ports[0],
-		HTTP:        ports[1],
-		Interserver: ports[2],
-		Keeper:      ports[3],
-		KeeperRaft:  ports[4],
-	}, nil
+	nodes := make([]clusterNodePorts, replicas)
+
+	for i := range nodes {
+		p := all[i*portsPerClusterNode : (i+1)*portsPerClusterNode]
+		nodes[i] = clusterNodePorts{TCP: p[0], HTTP: p[1], Interserver: p[2], Keeper: p[3], KeeperRaft: p[4]}
+	}
+
+	return nodes, nil
 }
 
 // waitForAllNodesReady waits for every node's /ping endpoint to respond, in parallel.

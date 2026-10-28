@@ -265,7 +265,7 @@ ch := embeddedclickhouse.NewServer(
 )
 ```
 
-Headers are sent only to `CustomArchiveURL` and `BinaryRepositoryURL`, never to the default GitHub source. On a redirect to another domain, Go's `net/http` drops `Authorization` and `Cookie`.
+Headers are sent only to `CustomArchiveURL` and `BinaryRepositoryURL`, never to the default GitHub source, and they are dropped as soon as a redirect leaves the original host (e.g. a registry redirecting to object storage).
 
 ### Checksum verification
 

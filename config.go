@@ -161,8 +161,9 @@ func (c Config) AllowMissingChecksum(allow bool) Config {
 // to download requests, so a private mirror's credentials need not ride in the URL.
 // Headers are sent only to user-chosen sources: CustomArchiveURL and
 // BinaryRepositoryURL (including its .sha512 files), never to the default GitHub
-// release URL. On a redirect to a different domain, net/http drops sensitive headers
-// such as Authorization and Cookie. Calling it again with the same key adds a value.
+// release URL. They are also dropped as soon as a redirect leaves the original host,
+// so a registry that redirects to object storage never forwards them. Calling it again
+// with the same key adds a value.
 func (c Config) DownloadHeader(key, value string) Config {
 	h := c.httpHeaders.Clone()
 	if h == nil {
