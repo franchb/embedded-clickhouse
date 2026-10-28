@@ -40,6 +40,7 @@ func TestWriteClusterNodeConfig_XMLCorrectness(t *testing.T) {
 	xml := string(content)
 
 	checks := []string{
+		"<listen_host>127.0.0.1</listen_host>",
 		"<tcp_port>19000</tcp_port>",
 		"<http_port>18123</http_port>",
 		"<interserver_http_port>19009</interserver_http_port>",

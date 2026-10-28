@@ -10,6 +10,7 @@ import (
 const clusterConfigTemplate = `<?xml version="1.0"?>
 <clickhouse>
 {{- template "logger" .}}
+{{- template "listen" .}}
 
     <tcp_port>{{.TCPPort}}</tcp_port>
     <http_port>{{.HTTPPort}}</http_port>
@@ -110,6 +111,11 @@ type clusterNodePorts struct {
 	Interserver uint32
 	Keeper      uint32
 	KeeperRaft  uint32
+}
+
+// all returns every port of the node.
+func (p clusterNodePorts) all() []uint32 {
+	return []uint32{p.TCP, p.HTTP, p.Interserver, p.Keeper, p.KeeperRaft}
 }
 
 // clusterTopology is pre-computed shared topology built from all node ports.

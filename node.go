@@ -19,6 +19,7 @@ type node struct {
 	ownsDir     bool   // dir was created by launchNode and is removed by teardown
 	tcpPort     uint32
 	httpPort    uint32
+	ports       []uint32      // every port the server listens on, probed after an early exit
 	stopTimeout time.Duration // resolved StopTimeout, so Stop never sees an unresolved 0
 }
 
@@ -31,6 +32,7 @@ type nodeSpec struct {
 	tempPattern string
 	tcpPort     uint32
 	httpPort    uint32
+	ports       []uint32 // every port the server listens on, including tcpPort and httpPort
 	stopTimeout time.Duration
 	writeConfig func(dir string) (string, error)
 	output      io.Writer
@@ -45,6 +47,7 @@ func launchNode(spec nodeSpec) (*node, error) {
 		ownsDir:     false,
 		tcpPort:     spec.tcpPort,
 		httpPort:    spec.httpPort,
+		ports:       spec.ports,
 		stopTimeout: spec.stopTimeout,
 	}
 
@@ -98,6 +101,7 @@ func (n *node) teardown() error {
 	n.ownsDir = false
 	n.tcpPort = 0
 	n.httpPort = 0
+	n.ports = nil
 
 	return errors.Join(errs...)
 }
@@ -112,6 +116,27 @@ func (n *node) removeDir() error {
 	}
 
 	return nil
+}
+
+// maxStartAttempts bounds how many times a start runs when it keeps losing a port to
+// another process.
+const maxStartAttempts = 3
+
+// retryOnPortConflict runs attempt, and runs it again while it fails with ErrPortConflict,
+// up to maxStartAttempts times. Auto-allocated ports are released before the server binds
+// them, so a concurrent process can take one in between; an attempt with freshly
+// allocated ports almost always gets clean ones. Pass retry=false when a port is
+// user-fixed, since another attempt would bind the same port again.
+func retryOnPortConflict(ctx context.Context, retry bool, logger io.Writer, attempt func() error) error {
+	for try := 1; ; try++ {
+		err := attempt()
+		if err == nil || !retry || try == maxStartAttempts || ctx.Err() != nil || !errors.Is(err, ErrPortConflict) {
+			return err
+		}
+
+		logf(logger, "embedded-clickhouse: %v; retrying with new ports (attempt %d of %d)\n",
+			err, try+1, maxStartAttempts)
+	}
 }
 
 // startGate tracks an in-flight Start so the owner's mutex is not held across the

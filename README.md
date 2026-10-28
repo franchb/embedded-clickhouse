@@ -396,8 +396,9 @@ Environments with less than 2 GB total RAM will be fragile regardless of setting
 3. **Cache** — stores the extracted binary at `~/.cache/embedded-clickhouse/` for reuse
 4. **Configure** — generates a minimal XML config with allocated ports and a temp data directory
 5. **Start** — launches `clickhouse server` as a child process
-6. **Health check** — polls `GET /ping` every 100ms until the server responds; if the process exits first, `Start` fails immediately with `ErrServerExited`
-7. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory. A server that crashed (e.g. SIGSEGV, OOM kill) before `Stop` is reported as an error, not as a clean stop
+6. **Health check** — every 100ms, asks the server over HTTP for its native TCP port (`SELECT getServerPort('tcp_port')`) until it answers; if the process exits first, `Start` fails immediately with `ErrServerExited`
+7. **Port conflicts** — auto-allocated ports are released before ClickHouse binds them, so a concurrent process (say, another test's server under `go test -parallel`) can take one in between. The config sets `<listen_host>127.0.0.1</listen_host>`, so ClickHouse then exits instead of running without that listener, and the health check rejects a different server answering on the HTTP port. Either way `Start` reports `ErrPortConflict`, after up to 3 attempts with fresh ports when every port was auto-allocated. The server listens on `127.0.0.1` only, not on `::1`; set `listen_host` through `Settings` to change that
+8. **Stop** — sends SIGTERM, waits for graceful shutdown, then SIGKILL if needed; cleans up the temp directory. A server that crashed (e.g. SIGSEGV, OOM kill) before `Stop` is reported as an error, not as a clean stop
 
 ## License
 

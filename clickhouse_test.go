@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,7 +46,7 @@ func TestEmbeddedClickHouse_Accessors(t *testing.T) {
 
 	s := &EmbeddedClickHouse{
 		started: true,
-		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, stopTimeout: 0},
+		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, ports: nil, stopTimeout: 0},
 	}
 
 	assert.True(t, s.Started())
@@ -103,7 +102,7 @@ func TestStop_AbortsInFlightStart(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
 
 	s := NewServer(
 		DefaultConfig().
@@ -172,7 +171,8 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 	s := NewServerForTest(rec, DefaultConfig().
 		BinaryPath(writeSleepingBinary(t)).
 		Logger(io.Discard).
-		HTTPPort(servePingStatus(t, http.StatusOK)))
+		TCPPort(fakeTCPPort).
+		HTTPPort(serveProbe(t, http.StatusOK, fakeTCPPort)))
 
 	require.NoError(t, s.Stop())
 
@@ -192,7 +192,8 @@ func TestStop_ZeroStopTimeoutUsesDefault(t *testing.T) {
 	s := NewServer(DefaultConfig().
 		BinaryPath(writeSleepingBinary(t)).
 		Logger(io.Discard).
-		HTTPPort(servePingStatus(t, http.StatusOK)).
+		TCPPort(fakeTCPPort).
+		HTTPPort(serveProbe(t, http.StatusOK, fakeTCPPort)).
 		StopTimeout(0))
 
 	require.NoError(t, s.Start())
@@ -203,7 +204,7 @@ func TestStartContext_Canceled(t *testing.T) {
 	t.Parallel()
 
 	fake := writeSleepingBinary(t)
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
 
 	s := NewServer(DefaultConfig().BinaryPath(fake).Logger(io.Discard).HTTPPort(httpPort))
 
@@ -234,7 +235,7 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	// Hold a listener answering non-200 on /ping and pin HTTPPort to it, so the
 	// readiness probe deterministically fails (the fake binary never binds a port)
 	// and no sibling t.Parallel() test can be assigned the port and answer 200.
-	httpPort := servePingStatus(t, http.StatusServiceUnavailable)
+	httpPort := serveProbe(t, http.StatusServiceUnavailable, 0)
 
 	s := NewServer(
 		DefaultConfig().
@@ -269,27 +270,9 @@ func TestStart_ChildDiesImmediately(t *testing.T) {
 	assert.ErrorIs(t, s.Stop(), ErrServerNotStarted)
 }
 
-// servePingStatus serves the given status on /ping from a held listener and returns
-// its port. Holding the listener keeps sibling parallel tests from being assigned it.
-func servePingStatus(t *testing.T, status int) uint32 {
-	t.Helper()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(status)
-	})
-
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	srv := &http.Server{Handler: mux}
-
-	go srv.Serve(l)
-
-	t.Cleanup(func() { srv.Close() })
-
-	return uint32(l.Addr().(*net.TCPAddr).Port)
-}
+// fakeTCPPort is the native port fake-binary tests configure. The fake never binds it;
+// serveProbe reports it so the readiness probe accepts the stub as the node's server.
+const fakeTCPPort = 19000
 
 // writeSleepingBinary writes a fake server that stays alive until signalled.
 func writeSleepingBinary(t *testing.T) string {

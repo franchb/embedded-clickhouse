@@ -9,6 +9,9 @@ import (
 	"sync"
 )
 
+// loopbackHost is the address every server listens on and every client dials.
+const loopbackHost = "127.0.0.1"
+
 // allocatePort finds a free TCP port by binding to :0 and immediately closing.
 func allocatePort() (uint32, error) {
 	//nolint:noctx // ephemeral bind-and-close; context is meaningless
@@ -25,10 +28,12 @@ func allocatePort() (uint32, error) {
 
 	port := uint32(tcpAddr.Port)
 
-	// Note: there is an inherent TOCTOU race between releasing this listener
-	// and ClickHouse binding to the same port. This is unavoidable with
-	// bind-and-release port allocation, but is safe in practice because
-	// the port is allocated on loopback and ClickHouse binds quickly.
+	// Note: there is an inherent TOCTOU race between releasing this listener and
+	// ClickHouse binding to the same port, and the window is wide: ClickHouse loads
+	// its config and initializes before it binds. Another process can take the port
+	// in between. The server config sets listen_host, so ClickHouse then exits instead
+	// of running without the listener; waitForReadyOrExit reports that as
+	// ErrPortConflict, and Start retries with fresh ports (see retryOnPortConflict).
 	l.Close()
 
 	return port, nil
@@ -39,8 +44,8 @@ func allocatePort() (uint32, error) {
 // kernel cannot reassign a just-freed ephemeral port to a later iteration. This
 // makes the returned ports distinct by construction rather than by chance.
 //
-// The same TOCTOU caveat documented on allocatePort applies once the listeners
-// are released here.
+// The same TOCTOU caveat, and its handling, documented on allocatePort applies once
+// the listeners are released here.
 func allocatePorts(count int) ([]uint32, error) {
 	listeners := make([]net.Listener, 0, count)
 

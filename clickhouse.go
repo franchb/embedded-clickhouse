@@ -60,6 +60,11 @@ var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cl
 // ErrServerExited is returned when the ClickHouse process exits during startup before becoming ready.
 var ErrServerExited = errors.New("embedded-clickhouse: server process exited during startup")
 
+// ErrPortConflict is returned when another process holds one of the server's ports.
+// Start then fails instead of reporting a server whose address belongs to someone else.
+// When every port was auto-allocated, Start first retries with fresh ports.
+var ErrPortConflict = errors.New("embedded-clickhouse: port conflict")
+
 // ErrInvalidConfig is returned by Start and EnsureBinary when the Config is unusable,
 // before any download is attempted.
 var ErrInvalidConfig = errors.New("embedded-clickhouse: invalid config")
@@ -169,6 +174,32 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 		return nil, err
 	}
 
+	// One StartTimeout covers every attempt.
+	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
+	defer cancel()
+
+	// A retry draws fresh ports, which only helps when none of them is user-fixed.
+	autoPorts := cfg.tcpPort == 0 && cfg.httpPort == 0
+
+	var nd *node
+
+	err = retryOnPortConflict(readyCtx, autoPorts, cfg.logger, func() error {
+		var launchErr error
+
+		nd, launchErr = launchServerNode(readyCtx, binPath, cfg)
+
+		return launchErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return nd, nil
+}
+
+// launchServerNode allocates ports, launches one server, and waits until it is ready.
+// On error, the node is torn down.
+func launchServerNode(ctx context.Context, binPath string, cfg Config) (*node, error) {
 	tcpPort, httpPort, err := resolveServerPorts(cfg.tcpPort, cfg.httpPort)
 	if err != nil {
 		return nil, err
@@ -180,6 +211,7 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 		tempPattern: "embedded-clickhouse-*",
 		tcpPort:     tcpPort,
 		httpPort:    httpPort,
+		ports:       []uint32{tcpPort, httpPort},
 		stopTimeout: cfg.stopTimeout,
 		writeConfig: func(dir string) (string, error) {
 			return writeServerConfig(dir, tcpPort, httpPort, cfg.settings)
@@ -191,10 +223,7 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 	}
 
 	// Wait for server to be ready, or abort early if the process exits.
-	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
-	defer cancel()
-
-	if err := waitForReadyOrExit(readyCtx, httpPort, nd.proc); err != nil {
+	if err := waitForReadyOrExit(ctx, nd); err != nil {
 		_ = nd.teardown()
 		return nil, err
 	}

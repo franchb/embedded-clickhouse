@@ -36,6 +36,7 @@ func TestWriteServerConfig(t *testing.T) {
 	}
 
 	checks := []string{
+		"<listen_host>127.0.0.1</listen_host>",
 		"<tcp_port>19000</tcp_port>",
 		"<http_port>18123</http_port>",
 		"<max_threads>4</max_threads>",
@@ -147,5 +148,31 @@ func TestWriteServerConfig_NoSettings(t *testing.T) {
 
 	if !strings.Contains(string(content), "<tcp_port>9000</tcp_port>") {
 		t.Error("config missing tcp_port")
+	}
+}
+
+// TestWriteServerConfig_UserListenHost: a user-supplied listen_host replaces the default
+// instead of adding a second <listen_host> next to it.
+func TestWriteServerConfig_UserListenHost(t *testing.T) {
+	t.Parallel()
+
+	configPath, err := writeServerConfig(t.TempDir(), 19000, 18123, map[string]string{"listen_host": "0.0.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xml := string(content)
+
+	if got := strings.Count(xml, "<listen_host>"); got != 1 {
+		t.Fatalf("config has %d <listen_host> elements, want 1:\n%s", got, xml)
+	}
+
+	if !strings.Contains(xml, "<listen_host>0.0.0.0</listen_host>") {
+		t.Errorf("config missing the user listen_host:\n%s", xml)
 	}
 }
