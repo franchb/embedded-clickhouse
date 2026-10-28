@@ -2,6 +2,10 @@ package embeddedclickhouse
 
 import (
 	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,8 +27,18 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("httpPort = %d, want 0", cfg.httpPort)
 	}
 
-	if cfg.startTimeout != 30*time.Second {
-		t.Errorf("startTimeout = %v, want 30s", cfg.startTimeout)
+	// 0 means "use the mode default"; resolve fills it in.
+	if cfg.startTimeout != 0 {
+		t.Errorf("startTimeout = %v, want 0", cfg.startTimeout)
+	}
+
+	resolved, err := cfg.resolve(defaultStartTimeout, serverManagedKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolved.startTimeout != 30*time.Second {
+		t.Errorf("resolved startTimeout = %v, want 30s", resolved.startTimeout)
 	}
 
 	if cfg.stopTimeout != 10*time.Second {
@@ -165,5 +179,95 @@ func TestConfigBuilderImmutability(t *testing.T) {
 
 	if modified.tcpPort != 9000 {
 		t.Errorf("modified tcpPort = %d, want 9000", modified.tcpPort)
+	}
+}
+
+func TestConfigResolve_ZeroValueDefaults(t *testing.T) {
+	t.Parallel()
+
+	// A zero Config with only a version must not produce a born-expired start
+	// context or an instant-SIGKILL stop.
+	cfg, err := Config{}.Version(DefaultVersion).resolve(defaultStartTimeout, serverManagedKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.startTimeout != defaultStartTimeout {
+		t.Errorf("startTimeout = %v, want %v", cfg.startTimeout, defaultStartTimeout)
+	}
+
+	if cfg.stopTimeout != defaultStopTimeout {
+		t.Errorf("stopTimeout = %v, want %v", cfg.stopTimeout, defaultStopTimeout)
+	}
+}
+
+func TestConfigResolve_Rejects(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		cfg     Config
+		wantErr error
+	}{
+		"empty version":         {Config{}, ErrInvalidConfig},
+		"port above 65535":      {DefaultConfig().TCPPort(70000), ErrInvalidConfig},
+		"http port above 65535": {DefaultConfig().HTTPPort(65536), ErrInvalidConfig},
+		"tcp equals http":       {DefaultConfig().TCPPort(19000).HTTPPort(19000), ErrInvalidConfig},
+		"short sha256":          {DefaultConfig().CustomArchiveURL("http://x/a.tgz").SHA256("abc"), ErrInvalidConfig},
+		"non-hex sha512": {
+			DefaultConfig().CustomArchiveURL("http://x/a.tgz").SHA512(strings.Repeat("z", 128)),
+			ErrInvalidConfig,
+		},
+		"managed setting": {DefaultConfig().Settings(map[string]string{"tcp_port": "1"}), ErrInvalidSettingKey},
+		"unsafe setting":  {DefaultConfig().Settings(map[string]string{"a b": "1"}), ErrInvalidSettingKey},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := tc.cfg.resolve(defaultStartTimeout, serverManagedKeys); !errors.Is(err, tc.wantErr) {
+				t.Errorf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigResolve_EmptyVersionAllowedWithExplicitBinary(t *testing.T) {
+	t.Parallel()
+
+	for name, cfg := range map[string]Config{
+		"BinaryPath":        Config{}.BinaryPath("/usr/bin/clickhouse"),
+		"CustomArchivePath": Config{}.CustomArchivePath("/tmp/ch.tgz"),
+		"CustomArchiveURL":  Config{}.CustomArchiveURL("https://example.com/ch.tgz"),
+	} {
+		if _, err := cfg.resolve(defaultStartTimeout, serverManagedKeys); err != nil {
+			t.Errorf("%s: unexpected error %v", name, err)
+		}
+	}
+}
+
+// TestStart_InvalidConfigFailsBeforeDownload: the cache dir points at a file, so any
+// download attempt would fail with a different error. ErrInvalidConfig proves Start
+// validated first.
+func TestStart_InvalidConfigFailsBeforeDownload(t *testing.T) {
+	t.Parallel()
+
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := NewServer(DefaultConfig().Version("").CachePath(blocker)).Start()
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("Start err = %v, want ErrInvalidConfig", err)
+	}
+
+	err = NewCluster(2, DefaultConfig().Version("").CachePath(blocker)).Start()
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("Cluster.Start err = %v, want ErrInvalidConfig", err)
+	}
+
+	if _, err := EnsureBinary(DefaultConfig().Version("").CachePath(blocker)); !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("EnsureBinary err = %v, want ErrInvalidConfig", err)
 	}
 }

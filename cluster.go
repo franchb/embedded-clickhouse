@@ -54,7 +54,7 @@ type Cluster struct {
 }
 
 // NewCluster creates a new Cluster with the given number of replicas.
-// If StartTimeout is not explicitly set on the config, defaultClusterStartTimeout is used.
+// If StartTimeout is 0 (the DefaultConfig value), defaultClusterStartTimeout is used.
 func NewCluster(replicas int, config ...Config) *Cluster {
 	var cfg Config
 	if len(config) > 0 {
@@ -63,7 +63,7 @@ func NewCluster(replicas int, config ...Config) *Cluster {
 		cfg = DefaultConfig()
 	}
 
-	if !cfg.startTimeoutSet {
+	if cfg.startTimeout <= 0 {
 		cfg.startTimeout = defaultClusterStartTimeout
 	}
 
@@ -134,6 +134,11 @@ func (c *Cluster) StartContext(ctx context.Context) error {
 // startClusterNodes resolves the binary, launches every replica, and waits for all
 // of them and for Keeper quorum. On error, every launched node is torn down.
 func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*EmbeddedClickHouse, error) {
+	cfg, err := cfg.resolve(defaultClusterStartTimeout, clusterManagedKeys)
+	if err != nil {
+		return nil, err
+	}
+
 	// Resolve binary once (shared across all nodes).
 	binPath, err := ensureBinary(cfg)
 	if err != nil {

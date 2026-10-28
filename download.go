@@ -28,6 +28,10 @@ var httpClient = &http.Client{Timeout: 10 * time.Minute} //nolint:gochecknogloba
 // GitHub release download is used, with SHA verification and on-disk caching
 // (content-addressed for custom assets, version-pinned for standard releases).
 func EnsureBinary(cfg Config) (string, error) {
+	if err := cfg.validateBinarySource(); err != nil {
+		return "", err
+	}
+
 	return ensureBinary(cfg)
 }
 
@@ -418,9 +422,14 @@ func parseSHA512(content, filename string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrSHA512NotFound, filename)
 }
 
+// Hex-encoded digest lengths.
+const (
+	sha256HexLen = 64
+	sha512HexLen = 128
+)
+
 // isSHA512Hex reports whether s is exactly 128 hexadecimal digits (a SHA512 digest).
 func isSHA512Hex(s string) bool {
-	const sha512HexLen = 128
 	if len(s) != sha512HexLen {
 		return false
 	}

@@ -60,6 +60,10 @@ var ErrClusterManaged = errors.New("embedded-clickhouse: node is managed by a cl
 // ErrServerExited is returned when the ClickHouse process exits during startup before becoming ready.
 var ErrServerExited = errors.New("embedded-clickhouse: server process exited during startup")
 
+// ErrInvalidConfig is returned by Start and EnsureBinary when the Config is unusable,
+// before any download is attempted.
+var ErrInvalidConfig = errors.New("embedded-clickhouse: invalid config")
+
 // ErrLockingUnsupported is returned when cross-process file locking is not supported on the current platform.
 var ErrLockingUnsupported = errors.New("embedded-clickhouse: file locking not supported on this platform")
 
@@ -155,6 +159,11 @@ func (e *EmbeddedClickHouse) StartContext(ctx context.Context) error {
 
 // startSingleNode resolves the binary, launches one server, and waits until it is ready.
 func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
+	cfg, err := cfg.resolve(defaultStartTimeout, serverManagedKeys)
+	if err != nil {
+		return nil, err
+	}
+
 	binPath, err := ensureBinary(cfg)
 	if err != nil {
 		return nil, err

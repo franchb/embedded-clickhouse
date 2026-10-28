@@ -1,6 +1,7 @@
 package embeddedclickhouse
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,11 @@ func TestWriteServerConfig(t *testing.T) {
 	}
 
 	xml := string(content)
+
+	// The XML declaration must be the very first bytes, or ClickHouse rejects the file.
+	if !strings.HasPrefix(xml, "<?xml") {
+		t.Errorf("config must start with the XML declaration, got %q", xml[:min(len(xml), 20)])
+	}
 
 	checks := []string{
 		"<tcp_port>19000</tcp_port>",
@@ -96,35 +102,32 @@ func TestWriteServerConfig_OverrideMaxMemory(t *testing.T) {
 	}
 }
 
-func TestMergeSettings(t *testing.T) {
+func TestWriteServerConfig_RejectsManagedKeys(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil input returns empty map", func(t *testing.T) {
-		t.Parallel()
-
-		got := mergeSettings(nil)
-		if len(got) != 0 {
-			t.Errorf("expected empty map, got %v", got)
+	for _, key := range serverManagedKeys {
+		_, err := writeServerConfig(t.TempDir(), 19000, 18123, map[string]string{key: "1"})
+		if !errors.Is(err, ErrInvalidSettingKey) {
+			t.Errorf("setting %q: err = %v, want ErrInvalidSettingKey", key, err)
 		}
-	})
+	}
+}
 
-	t.Run("user values pass through", func(t *testing.T) {
-		t.Parallel()
+func TestWriteConfigFile_RemovesPartialFileOnError(t *testing.T) {
+	t.Parallel()
 
-		got := mergeSettings(map[string]string{testKeyMaxServerMemoryUsage: "999"})
-		if got[testKeyMaxServerMemoryUsage] != "999" {
-			t.Errorf("expected value 999, got %q", got[testKeyMaxServerMemoryUsage])
-		}
-	})
+	path := filepath.Join(t.TempDir(), "config.xml")
 
-	t.Run("additive keys preserved", func(t *testing.T) {
-		t.Parallel()
+	// Executing a template that references a missing field fails mid-render.
+	tmpl := newConfigTemplate("bad", "<clickhouse>{{.Missing}}</clickhouse>")
 
-		got := mergeSettings(map[string]string{"max_threads": "4"})
-		if got["max_threads"] != "4" {
-			t.Errorf("expected max_threads=4, got %q", got["max_threads"])
-		}
-	})
+	if err := writeConfigFile(path, tmpl, struct{}{}); err == nil {
+		t.Fatal("expected template execution error")
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("partial config left behind: stat err = %v", err)
+	}
 }
 
 func TestWriteServerConfig_NoSettings(t *testing.T) {
