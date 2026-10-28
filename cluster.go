@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -383,38 +382,12 @@ func waitForKeeperQuorum(ctx context.Context, httpPort uint32) error {
 
 	client := &http.Client{Timeout: healthRequestTimeout}
 
-	if keeperReady(ctx, client, checkURL) {
-		return nil
-	}
-
-	ticker := time.NewTicker(keeperQuorumPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w: %w", ErrKeeperNotReady, ctx.Err())
-		case <-ticker.C:
-			if keeperReady(ctx, client, checkURL) {
-				return nil
-			}
-		}
-	}
-}
-
-func keeperReady(ctx context.Context, client *http.Client, checkURL string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkURL, nil)
+	err := pollUntil(ctx, keeperQuorumPollInterval, nil, func() (bool, error) {
+		return ping(ctx, client, checkURL), nil
+	})
 	if err != nil {
-		return false
+		return fmt.Errorf("%w: %w", ErrKeeperNotReady, err)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	io.Copy(io.Discard, resp.Body)
-
-	return resp.StatusCode == http.StatusOK
+	return nil
 }
