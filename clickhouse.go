@@ -116,7 +116,7 @@ func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 }
 
 // Start downloads the ClickHouse binary (if needed), generates config, and starts the server.
-func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard adds one branch
+func (e *EmbeddedClickHouse) Start() error {
 	e.mu.Lock() // write lock: modifies started, cmd, ports
 	defer e.mu.Unlock()
 
@@ -196,12 +196,7 @@ func (e *EmbeddedClickHouse) Start() error { //nolint:cyclop // cluster guard ad
 	}
 
 	// Start process with configured logger for stdout/stderr.
-	logger := e.config.logger
-	if logger == nil {
-		logger = os.Stdout
-	}
-
-	proc, err := startProcess(binPath, configPath, logger)
+	proc, err := startProcess(binPath, configPath, processOutput(e.config.logger))
 	if err != nil {
 		return err
 	}

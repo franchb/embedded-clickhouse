@@ -153,10 +153,8 @@ func (c *Cluster) Start() error { //nolint:funlen,cyclop // multi-phase orchestr
 	// Start each node.
 	nodes := make([]*EmbeddedClickHouse, c.replicas)
 
-	logger := c.config.logger
-	if logger == nil {
-		logger = os.Stdout
-	}
+	// All nodes share one writer, so it must tolerate concurrent writes.
+	logger := sharedOutput(c.config.logger)
 
 	for i := range c.replicas {
 		tmpDir, mkErr := os.MkdirTemp("", fmt.Sprintf("embedded-clickhouse-cluster-%d-*", i))

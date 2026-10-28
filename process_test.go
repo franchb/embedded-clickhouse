@@ -1,14 +1,18 @@
 package embeddedclickhouse
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // writeFakeBinary writes an executable shell script to t.TempDir() that ignores its
@@ -147,4 +151,42 @@ func TestStartProcess_ExitErrorCaptured(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("stopProcess hung; likely a second cmd.Wait or single-delivery deadlock")
 	}
+}
+
+func TestSharedOutput(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, io.Discard, sharedOutput(nil), "nil logger must discard, not fall back to stdout")
+	assert.Equal(t, io.Discard, sharedOutput(io.Discard))
+	assert.Equal(t, io.Writer(os.Stderr), sharedOutput(os.Stderr), "*os.File is passed through as an fd")
+
+	var buf bytes.Buffer
+
+	_, wrapped := sharedOutput(&buf).(*syncWriter)
+	assert.True(t, wrapped, "non-file writers must be mutex-wrapped")
+}
+
+// TestSyncWriter_ConcurrentWrites fails under -race without the mutex.
+func TestSyncWriter_ConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	out := sharedOutput(&buf)
+
+	const writers, lines = 8, 100
+
+	var wg sync.WaitGroup
+
+	for range writers {
+		wg.Go(func() {
+			for range lines {
+				_, _ = out.Write([]byte("x\n"))
+			}
+		})
+	}
+
+	wg.Wait()
+
+	assert.Equal(t, writers*lines*2, buf.Len())
 }
