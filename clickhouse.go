@@ -180,6 +180,7 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 		tempPattern: "embedded-clickhouse-*",
 		tcpPort:     tcpPort,
 		httpPort:    httpPort,
+		stopTimeout: cfg.stopTimeout,
 		writeConfig: func(dir string) (string, error) {
 			return writeServerConfig(dir, tcpPort, httpPort, cfg.settings)
 		},
@@ -194,7 +195,7 @@ func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
 	defer cancel()
 
 	if err := waitForReadyOrExit(readyCtx, httpPort, nd.proc); err != nil {
-		_ = nd.teardown(cfg.stopTimeout)
+		_ = nd.teardown()
 		return nil, err
 	}
 
@@ -256,7 +257,7 @@ func (e *EmbeddedClickHouse) Stop() error {
 
 	e.started = false
 
-	return e.node.teardown(e.config.stopTimeout)
+	return e.node.teardown()
 }
 
 // TCPAddr returns the TCP address for the ClickHouse native protocol (e.g., "127.0.0.1:19000").

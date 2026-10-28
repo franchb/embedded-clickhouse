@@ -168,7 +168,7 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 	defer func() {
 		if !success {
 			for _, n := range slices.Backward(launched) {
-				_ = n.teardown(cfg.stopTimeout)
+				_ = n.teardown()
 			}
 		}
 	}()
@@ -180,6 +180,7 @@ func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*Embedd
 			tempPattern: fmt.Sprintf("embedded-clickhouse-cluster-%d-*", i),
 			tcpPort:     ports[i].TCP,
 			httpPort:    ports[i].HTTP,
+			stopTimeout: cfg.stopTimeout,
 			writeConfig: func(dir string) (string, error) {
 				return writeClusterNodeConfig(dir, i, topo)
 			},
@@ -243,7 +244,7 @@ func (c *Cluster) Stop() error {
 
 			member.started = false
 
-			if err := member.node.teardown(c.config.stopTimeout); err != nil {
+			if err := member.node.teardown(); err != nil {
 				errs[i] = fmt.Errorf("node %d: %w", i, err)
 			}
 		})

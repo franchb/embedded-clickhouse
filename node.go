@@ -14,11 +14,12 @@ import (
 // single-node and the cluster lifecycles create nodes with launchNode and tear them
 // down with node.teardown, so the two paths cannot drift apart.
 type node struct {
-	proc     *process
-	dir      string // server working directory: config, data, logs
-	ownsDir  bool   // dir was created by launchNode and is removed by teardown
-	tcpPort  uint32
-	httpPort uint32
+	proc        *process
+	dir         string // server working directory: config, data, logs
+	ownsDir     bool   // dir was created by launchNode and is removed by teardown
+	tcpPort     uint32
+	httpPort    uint32
+	stopTimeout time.Duration // resolved StopTimeout, so Stop never sees an unresolved 0
 }
 
 // nodeSpec describes how to launch a node.
@@ -30,6 +31,7 @@ type nodeSpec struct {
 	tempPattern string
 	tcpPort     uint32
 	httpPort    uint32
+	stopTimeout time.Duration
 	writeConfig func(dir string) (string, error)
 	output      io.Writer
 }
@@ -37,7 +39,14 @@ type nodeSpec struct {
 // launchNode prepares the node's directory, writes its config, and starts the server
 // process. It does not wait for readiness. On error, everything it created is removed.
 func launchNode(spec nodeSpec) (*node, error) {
-	nd := &node{proc: nil, dir: "", ownsDir: false, tcpPort: spec.tcpPort, httpPort: spec.httpPort}
+	nd := &node{
+		proc:        nil,
+		dir:         "",
+		ownsDir:     false,
+		tcpPort:     spec.tcpPort,
+		httpPort:    spec.httpPort,
+		stopTimeout: spec.stopTimeout,
+	}
 
 	if spec.dataPath != "" {
 		if err := os.MkdirAll(spec.dataPath, 0o755); err != nil {
@@ -73,10 +82,10 @@ func launchNode(spec nodeSpec) (*node, error) {
 
 // teardown stops the server process, removes an owned working directory, and resets
 // the node to its zero state so stale handles report no address. Safe on a zero node.
-func (n *node) teardown(stopTimeout time.Duration) error {
+func (n *node) teardown() error {
 	var errs []error
 
-	if err := stopProcess(n.proc, stopTimeout); err != nil {
+	if err := stopProcess(n.proc, n.stopTimeout); err != nil {
 		errs = append(errs, err)
 	}
 

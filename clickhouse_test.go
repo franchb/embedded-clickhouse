@@ -47,7 +47,7 @@ func TestEmbeddedClickHouse_Accessors(t *testing.T) {
 
 	s := &EmbeddedClickHouse{
 		started: true,
-		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123},
+		node:    node{proc: nil, dir: "", ownsDir: false, tcpPort: 19000, httpPort: 18123, stopTimeout: 0},
 	}
 
 	assert.True(t, s.Started())
@@ -181,6 +181,22 @@ func TestNewServerForTest_ExplicitStopIsNotAFailure(t *testing.T) {
 	}
 
 	assert.Empty(t, rec.errs)
+}
+
+// TestStop_ZeroStopTimeoutUsesDefault: a zero StopTimeout must resolve to the default
+// for Stop too, not only for Start. With an unresolved 0, Stop would SIGKILL instantly
+// and report ErrStopTimeout instead of letting the server exit on SIGTERM.
+func TestStop_ZeroStopTimeoutUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer(DefaultConfig().
+		BinaryPath(writeSleepingBinary(t)).
+		Logger(io.Discard).
+		HTTPPort(servePingStatus(t, http.StatusOK)).
+		StopTimeout(0))
+
+	require.NoError(t, s.Start())
+	require.NoError(t, s.Stop())
 }
 
 func TestStartContext_Canceled(t *testing.T) {
