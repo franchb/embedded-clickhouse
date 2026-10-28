@@ -7,8 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"slices"
 	"sync"
 	"testing"
 )
@@ -71,15 +69,12 @@ type EmbeddedClickHouse struct {
 
 	mu      sync.RWMutex
 	started bool
-	proc    *process
-	tmpDir  string
+	gate    startGate
+	node    node
 
-	tcpPort         uint32
-	httpPort        uint32
-	interserverPort uint32
-	keeperPort      uint32
-	keeperRaftPort  uint32
-	clusterManaged  bool
+	// clusterManaged marks a node owned by a Cluster: its lifecycle belongs to
+	// Cluster.Start/Stop, so the single-node Start/Stop refuse to touch it.
+	clusterManaged bool
 }
 
 // NewServer creates a new EmbeddedClickHouse with the given config.
@@ -95,8 +90,9 @@ func NewServer(config ...Config) *EmbeddedClickHouse {
 	return &EmbeddedClickHouse{config: cfg}
 }
 
-// NewServerForTest creates a server, starts it, and registers t.Cleanup(server.Stop).
-// Calls t.Fatal on Start() error.
+// NewServerForTest creates a server, starts it, and registers tb.Cleanup(server.Stop).
+// Calls tb.Fatal on Start() error. A test may call Stop itself; the cleanup then
+// finds the server already stopped and does not report that as a failure.
 func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 	tb.Helper()
 
@@ -107,7 +103,7 @@ func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 	}
 
 	tb.Cleanup(func() {
-		if err := s.Stop(); err != nil {
+		if err := s.Stop(); err != nil && !errors.Is(err, ErrServerNotStarted) {
 			tb.Errorf("embedded-clickhouse: stop failed: %v", err)
 		}
 	})
@@ -116,175 +112,200 @@ func NewServerForTest(tb testing.TB, config ...Config) *EmbeddedClickHouse {
 }
 
 // Start downloads the ClickHouse binary (if needed), generates config, and starts the server.
+// It is equivalent to StartContext(context.Background()).
 func (e *EmbeddedClickHouse) Start() error {
-	e.mu.Lock() // write lock: modifies started, cmd, ports
-	defer e.mu.Unlock()
+	return e.StartContext(context.Background())
+}
+
+// StartContext is like Start, but aborts when ctx is done. StartTimeout still bounds
+// the readiness wait. A concurrent Stop also aborts an in-progress start.
+func (e *EmbeddedClickHouse) StartContext(ctx context.Context) error {
+	e.mu.Lock()
 
 	if e.clusterManaged {
+		e.mu.Unlock()
 		return ErrClusterManaged
 	}
 
-	if e.started {
+	if e.started || e.gate.inFlight() {
+		e.mu.Unlock()
 		return ErrServerAlreadyStarted
 	}
 
-	cleanups := make([]func(), 0)
-	cleanup := func() {
-		for _, fn := range slices.Backward(cleanups) {
-			fn()
-		}
+	ctx = e.gate.begin(ctx)
+	cfg := e.config
+	e.mu.Unlock()
+
+	nd, err := startSingleNode(ctx, cfg)
+
+	e.mu.Lock()
+
+	wake := e.gate.end()
+
+	if err == nil {
+		e.node = *nd
+		e.started = true
 	}
 
-	success := false
+	e.mu.Unlock()
+	wake()
 
-	defer func() {
-		if !success {
-			cleanup()
-		}
-	}()
+	return err
+}
 
-	// Resolve binary.
-	binPath, err := ensureBinary(e.config)
+// startSingleNode resolves the binary, launches one server, and waits until it is ready.
+func startSingleNode(ctx context.Context, cfg Config) (*node, error) {
+	binPath, err := ensureBinary(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Allocate ports.
-	//
-	// Known limitation: these two allocatePort calls share the flaw fixed for
-	// clusters (see allocatePorts) — allocating sequentially can hand back the
-	// same just-freed ephemeral port, so tcpPort could equal httpPort. The risk
-	// is far smaller here (two ports, and either may be pre-set from config), so
-	// it is intentionally left out of the cluster fix.
-	tcpPort := e.config.tcpPort
-	if tcpPort == 0 {
-		tcpPort, err = allocatePort()
-		if err != nil {
-			return err
-		}
-	}
-
-	httpPort := e.config.httpPort
-	if httpPort == 0 {
-		httpPort, err = allocatePort()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Create temp directory or use configured data path.
-	var tmpDir string
-	if e.config.dataPath != "" {
-		tmpDir = e.config.dataPath
-
-		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-			return fmt.Errorf("embedded-clickhouse: create data dir: %w", err)
-		}
-	} else {
-		tmpDir, err = os.MkdirTemp("", "embedded-clickhouse-*")
-		if err != nil {
-			return fmt.Errorf("embedded-clickhouse: create temp dir: %w", err)
-		}
-
-		cleanups = append(cleanups, func() { os.RemoveAll(tmpDir) })
-	}
-
-	// Write server config.
-	configPath, err := writeServerConfig(tmpDir, tcpPort, httpPort, e.config.settings)
+	tcpPort, httpPort, err := resolveServerPorts(cfg.tcpPort, cfg.httpPort)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Start process with configured logger for stdout/stderr.
-	proc, err := startProcess(binPath, configPath, processOutput(e.config.logger))
-	if err != nil {
-		return err
-	}
-
-	cleanups = append(cleanups, func() {
-		stopProcess(proc, e.config.stopTimeout) //nolint:errcheck
+	nd, err := launchNode(nodeSpec{
+		binPath:     binPath,
+		dataPath:    cfg.dataPath,
+		tempPattern: "embedded-clickhouse-*",
+		tcpPort:     tcpPort,
+		httpPort:    httpPort,
+		writeConfig: func(dir string) (string, error) {
+			return writeServerConfig(dir, tcpPort, httpPort, cfg.settings)
+		},
+		output: processOutput(cfg.logger),
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Wait for server to be ready, or abort early if the process exits.
-	ctx, cancel := context.WithTimeout(context.Background(), e.config.startTimeout)
+	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
 	defer cancel()
 
-	if err := waitForReadyOrExit(ctx, httpPort, proc); err != nil {
-		return err
+	if err := waitForReadyOrExit(readyCtx, httpPort, nd.proc); err != nil {
+		_ = nd.teardown(cfg.stopTimeout)
+		return nil, err
 	}
 
-	e.proc = proc
-	e.tmpDir = tmpDir
-	e.tcpPort = tcpPort
-	e.httpPort = httpPort
-	e.started = true
-	success = true
+	return nd, nil
+}
 
-	return nil
+// resolveServerPorts returns the configured ports, auto-allocating any that are 0.
+// Auto-allocated ports come from one allocatePorts batch, so they are distinct from
+// each other, and a spare is drawn so they can also avoid a user-fixed port.
+func resolveServerPorts(tcpPort, httpPort uint32) (uint32, uint32, error) {
+	need := 0
+
+	for _, p := range []uint32{tcpPort, httpPort} {
+		if p == 0 {
+			need++
+		}
+	}
+
+	if need == 0 {
+		return tcpPort, httpPort, nil
+	}
+
+	free, err := allocatePorts(need + 1)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	for _, port := range free {
+		if port == tcpPort || port == httpPort {
+			continue
+		}
+
+		switch {
+		case tcpPort == 0:
+			tcpPort = port
+		case httpPort == 0:
+			httpPort = port
+		}
+	}
+
+	return tcpPort, httpPort, nil
 }
 
 // Stop gracefully shuts down the ClickHouse server and cleans up resources.
+// If a Start is still in progress, Stop aborts it first and waits for it to unwind.
 func (e *EmbeddedClickHouse) Stop() error {
-	e.mu.Lock() // write lock: resets started, cmd, ports
+	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.clusterManaged {
 		return ErrClusterManaged
 	}
+
+	e.gate.abort(&e.mu)
 
 	if !e.started {
 		return ErrServerNotStarted
 	}
 
-	var errs []error
-
-	if err := stopProcess(e.proc, e.config.stopTimeout); err != nil {
-		errs = append(errs, err)
-	}
-
-	// Only remove temp dir if no explicit data path was set.
-	if e.config.dataPath == "" && e.tmpDir != "" {
-		if err := os.RemoveAll(e.tmpDir); err != nil {
-			errs = append(errs, fmt.Errorf("embedded-clickhouse: remove temp dir: %w", err))
-		}
-	}
-
 	e.started = false
-	e.proc = nil
-	e.tcpPort = 0
-	e.httpPort = 0
 
-	return errors.Join(errs...)
+	return e.node.teardown(e.config.stopTimeout)
 }
 
 // TCPAddr returns the TCP address for the ClickHouse native protocol (e.g., "127.0.0.1:19000").
+// It returns "" while the server is not running (before Start completes or after Stop).
 func (e *EmbeddedClickHouse) TCPAddr() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return fmt.Sprintf("127.0.0.1:%d", e.tcpPort)
+	if !e.started {
+		return ""
+	}
+
+	return fmt.Sprintf("127.0.0.1:%d", e.node.tcpPort)
 }
 
 // HTTPAddr returns the HTTP address for the ClickHouse HTTP interface (e.g., "127.0.0.1:18123").
+// It returns "" while the server is not running (before Start completes or after Stop).
 func (e *EmbeddedClickHouse) HTTPAddr() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return fmt.Sprintf("127.0.0.1:%d", e.httpPort)
+	if !e.started {
+		return ""
+	}
+
+	return fmt.Sprintf("127.0.0.1:%d", e.node.httpPort)
 }
 
 // DSN returns a ClickHouse DSN for use with clickhouse-go (e.g., "clickhouse://127.0.0.1:19000/default").
+// It returns "" while the server is not running (before Start completes or after Stop).
 func (e *EmbeddedClickHouse) DSN() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return fmt.Sprintf("clickhouse://127.0.0.1:%d/default", e.tcpPort)
+	if !e.started {
+		return ""
+	}
+
+	return fmt.Sprintf("clickhouse://127.0.0.1:%d/default", e.node.tcpPort)
 }
 
 // HTTPURL returns the base HTTP URL (e.g., "http://127.0.0.1:18123").
+// It returns "" while the server is not running (before Start completes or after Stop).
 func (e *EmbeddedClickHouse) HTTPURL() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return fmt.Sprintf("http://127.0.0.1:%d", e.httpPort)
+	if !e.started {
+		return ""
+	}
+
+	return fmt.Sprintf("http://127.0.0.1:%d", e.node.httpPort)
+}
+
+// Started reports whether the server is running (Start completed and Stop has not been called).
+func (e *EmbeddedClickHouse) Started() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.started
 }

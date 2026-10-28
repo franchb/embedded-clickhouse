@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -50,6 +49,7 @@ type Cluster struct {
 
 	mu      sync.RWMutex
 	started bool
+	gate    startGate
 	nodes   []*EmbeddedClickHouse
 }
 
@@ -74,7 +74,8 @@ func NewCluster(replicas int, config ...Config) *Cluster {
 }
 
 // NewClusterForTest creates a cluster, starts it, and registers tb.Cleanup(cluster.Stop).
-// Calls tb.Fatal on Start() error.
+// Calls tb.Fatal on Start() error. A test may call Stop itself; the cleanup then
+// finds the cluster already stopped and does not report that as a failure.
 func NewClusterForTest(tb testing.TB, replicas int, config ...Config) *Cluster {
 	tb.Helper()
 
@@ -85,7 +86,7 @@ func NewClusterForTest(tb testing.TB, replicas int, config ...Config) *Cluster {
 	}
 
 	tb.Cleanup(func() {
-		if err := cl.Stop(); err != nil {
+		if err := cl.Stop(); err != nil && !errors.Is(err, ErrClusterNotStarted) {
 			tb.Errorf("embedded-clickhouse: cluster stop failed: %v", err)
 		}
 	})
@@ -94,153 +95,157 @@ func NewClusterForTest(tb testing.TB, replicas int, config ...Config) *Cluster {
 }
 
 // Start launches all cluster nodes and waits for Keeper quorum.
-func (c *Cluster) Start() error { //nolint:funlen,cyclop // multi-phase orchestrator with config-guard branches
+// It is equivalent to StartContext(context.Background()).
+func (c *Cluster) Start() error {
+	return c.StartContext(context.Background())
+}
+
+// StartContext is like Start, but aborts when ctx is done. StartTimeout still bounds
+// the readiness wait. A concurrent Stop also aborts an in-progress start.
+func (c *Cluster) StartContext(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	if c.started {
-		return ErrClusterAlreadyStarted
-	}
-
-	if c.replicas < minReplicas {
-		return fmt.Errorf("%w: got %d", ErrInvalidReplicaCount, c.replicas)
-	}
-
-	// Cluster mode auto-allocates all ports and uses temp data dirs per node. The
-	// single-node DataPath/TCPPort/HTTPPort options cannot be honored here (a node
-	// needs five ports, and Stop assumes ephemeral temp dirs), so reject them rather
-	// than silently ignore them.
-	if c.config.dataPath != "" || c.config.tcpPort != 0 || c.config.httpPort != 0 {
-		return ErrClusterUnsupportedOption
-	}
-
-	cleanups := make([]func(), 0)
-	cleanup := func() {
-		for _, fn := range slices.Backward(cleanups) {
-			fn()
-		}
-	}
-
-	success := false
-
-	defer func() {
-		if !success {
-			cleanup()
-		}
-	}()
-
-	// Resolve binary once (shared across all nodes).
-	binPath, err := ensureBinary(c.config)
-	if err != nil {
+	if err := c.checkStartableLocked(); err != nil {
+		c.mu.Unlock()
 		return err
 	}
 
-	// Allocate all ports upfront.
-	ports := make([]clusterNodePorts, c.replicas)
+	ctx = c.gate.begin(ctx)
+	cfg, replicas := c.config, c.replicas
+	c.mu.Unlock()
 
-	for i := range c.replicas {
+	nodes, err := startClusterNodes(ctx, cfg, replicas)
+
+	c.mu.Lock()
+
+	wake := c.gate.end()
+
+	if err == nil {
+		c.nodes = nodes
+		c.started = true
+	}
+
+	c.mu.Unlock()
+	wake()
+
+	return err
+}
+
+// startClusterNodes resolves the binary, launches every replica, and waits for all
+// of them and for Keeper quorum. On error, every launched node is torn down.
+func startClusterNodes(ctx context.Context, cfg Config, replicas int) ([]*EmbeddedClickHouse, error) {
+	// Resolve binary once (shared across all nodes).
+	binPath, err := ensureBinary(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Allocate all ports upfront.
+	ports := make([]clusterNodePorts, replicas)
+
+	for i := range replicas {
 		np, allocErr := allocateClusterNodePorts()
 		if allocErr != nil {
-			return allocErr
+			return nil, allocErr
 		}
 
 		ports[i] = np
 	}
 
-	// Build shared topology.
-	topo := buildClusterTopology(ports, c.config.settings)
-
-	// Start each node.
-	nodes := make([]*EmbeddedClickHouse, c.replicas)
+	topo := buildClusterTopology(ports, cfg.settings)
 
 	// All nodes share one writer, so it must tolerate concurrent writes.
-	logger := sharedOutput(c.config.logger)
+	output := sharedOutput(cfg.logger)
 
-	for i := range c.replicas {
-		tmpDir, mkErr := os.MkdirTemp("", fmt.Sprintf("embedded-clickhouse-cluster-%d-*", i))
-		if mkErr != nil {
-			return fmt.Errorf("embedded-clickhouse: create temp dir for node %d: %w", i, mkErr)
+	launched := make([]*node, 0, replicas)
+
+	success := false
+
+	defer func() {
+		if !success {
+			for _, n := range slices.Backward(launched) {
+				_ = n.teardown(cfg.stopTimeout)
+			}
 		}
+	}()
 
-		cleanups = append(cleanups, func() { os.RemoveAll(tmpDir) })
-
-		configPath, cfgErr := writeClusterNodeConfig(tmpDir, i, topo)
-		if cfgErr != nil {
-			return cfgErr
-		}
-
-		proc, startErr := startProcess(binPath, configPath, logger)
-		if startErr != nil {
-			return fmt.Errorf("embedded-clickhouse: start node %d: %w", i, startErr)
-		}
-
-		cleanups = append(cleanups, func() {
-			stopProcess(proc, c.config.stopTimeout) //nolint:errcheck
+	for i := range replicas {
+		nd, launchErr := launchNode(nodeSpec{
+			binPath:     binPath,
+			dataPath:    "",
+			tempPattern: fmt.Sprintf("embedded-clickhouse-cluster-%d-*", i),
+			tcpPort:     ports[i].TCP,
+			httpPort:    ports[i].HTTP,
+			writeConfig: func(dir string) (string, error) {
+				return writeClusterNodeConfig(dir, i, topo)
+			},
+			output: output,
 		})
-
-		nodes[i] = &EmbeddedClickHouse{
-			config:          c.config,
-			started:         true,
-			proc:            proc,
-			tmpDir:          tmpDir,
-			tcpPort:         ports[i].TCP,
-			httpPort:        ports[i].HTTP,
-			interserverPort: ports[i].Interserver,
-			keeperPort:      ports[i].Keeper,
-			keeperRaftPort:  ports[i].KeeperRaft,
-			clusterManaged:  true,
+		if launchErr != nil {
+			return nil, fmt.Errorf("embedded-clickhouse: start node %d: %w", i, launchErr)
 		}
+
+		launched = append(launched, nd)
 	}
 
-	// Wait for all nodes to respond to /ping.
-	ctx, cancel := context.WithTimeout(context.Background(), c.config.startTimeout)
+	readyCtx, cancel := context.WithTimeout(ctx, cfg.startTimeout)
 	defer cancel()
 
-	if err := waitForAllNodesReady(ctx, nodes); err != nil {
-		return err
+	// Wait for all nodes to respond to /ping.
+	if err := waitForAllNodesReady(readyCtx, launched); err != nil {
+		return nil, err
 	}
 
 	// Wait for Keeper quorum.
-	if err := waitForKeeperQuorum(ctx, nodes[0].httpPort); err != nil {
-		return err
+	if err := waitForKeeperQuorum(readyCtx, launched[0].httpPort); err != nil {
+		return nil, err
 	}
 
-	c.nodes = nodes
-	c.started = true
+	nodes := make([]*EmbeddedClickHouse, replicas)
+	for i, n := range launched {
+		nodes[i] = &EmbeddedClickHouse{config: cfg, started: true, node: *n, clusterManaged: true}
+	}
+
 	success = true
 
-	return nil
+	return nodes, nil
 }
 
-// Stop gracefully shuts down all cluster nodes in reverse order.
+// Stop shuts down all cluster nodes concurrently, so teardown takes as long as the
+// slowest node rather than the sum of all of them. If a Start is still in progress,
+// Stop aborts it first and waits for it to unwind.
+//
+// Node handles obtained from Node or Nodes are invalidated: their address accessors
+// return "" and their own Start/Stop keep returning ErrClusterManaged. Restarting the
+// cluster creates fresh nodes.
 func (c *Cluster) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.gate.abort(&c.mu)
 
 	if !c.started {
 		return ErrClusterNotStarted
 	}
 
-	var errs []error
+	errs := make([]error, len(c.nodes))
 
-	// Stop in reverse order.
-	for i, node := range slices.Backward(c.nodes) {
-		node.mu.Lock()
+	var wg sync.WaitGroup
 
-		if err := stopProcess(node.proc, c.config.stopTimeout); err != nil {
-			errs = append(errs, fmt.Errorf("node %d: %w", i, err))
-		}
+	for i, member := range c.nodes {
+		wg.Go(func() {
+			member.mu.Lock()
+			defer member.mu.Unlock()
 
-		if node.tmpDir != "" {
-			if err := os.RemoveAll(node.tmpDir); err != nil {
-				errs = append(errs, fmt.Errorf("node %d: remove temp dir: %w", i, err))
+			member.started = false
+
+			if err := member.node.teardown(c.config.stopTimeout); err != nil {
+				errs[i] = fmt.Errorf("node %d: %w", i, err)
 			}
-		}
-
-		node.started = false
-		node.proc = nil
-		node.mu.Unlock()
+		})
 	}
+
+	wg.Wait()
 
 	c.started = false
 	c.nodes = nil
@@ -264,12 +269,12 @@ func (c *Cluster) Node(index int) *EmbeddedClickHouse {
 	return c.nodes[index]
 }
 
-// Nodes returns all cluster nodes. Returns nil if the cluster is not started.
+// Nodes returns a copy of the cluster's node list. Returns nil if the cluster is not started.
 func (c *Cluster) Nodes() []*EmbeddedClickHouse {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.nodes
+	return slices.Clone(c.nodes)
 }
 
 // DSN returns the DSN for the first node (shortcut for Node(0).DSN()).
@@ -280,6 +285,27 @@ func (c *Cluster) DSN() string {
 // ClusterName returns the cluster name used in ON CLUSTER queries.
 func (c *Cluster) ClusterName() string {
 	return "test_cluster"
+}
+
+// checkStartableLocked validates that Start may proceed. Caller holds c.mu.
+func (c *Cluster) checkStartableLocked() error {
+	if c.started || c.gate.inFlight() {
+		return ErrClusterAlreadyStarted
+	}
+
+	if c.replicas < minReplicas {
+		return fmt.Errorf("%w: got %d", ErrInvalidReplicaCount, c.replicas)
+	}
+
+	// Cluster mode auto-allocates all ports and uses temp data dirs per node. The
+	// single-node DataPath/TCPPort/HTTPPort options cannot be honored here (a node
+	// needs five ports, and Stop assumes ephemeral temp dirs), so reject them rather
+	// than silently ignore them.
+	if c.config.dataPath != "" || c.config.tcpPort != 0 || c.config.httpPort != 0 {
+		return ErrClusterUnsupportedOption
+	}
+
+	return nil
 }
 
 // portsPerClusterNode is the number of distinct ports each cluster node needs:
@@ -313,7 +339,7 @@ func allocateClusterNodePorts() (clusterNodePorts, error) {
 // is recorded, so the genuine failure (e.g. ErrServerExited) is the first error enqueued
 // and is what gets returned — never a sibling's "context canceled" artifact.
 // Returns the first error reported by any node, or nil if all are ready.
-func waitForAllNodesReady(ctx context.Context, nodes []*EmbeddedClickHouse) error {
+func waitForAllNodesReady(ctx context.Context, nodes []*node) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

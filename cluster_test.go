@@ -94,8 +94,8 @@ func TestCluster_NodeOutOfRange(t *testing.T) {
 	cl := &Cluster{
 		started: true,
 		nodes: []*EmbeddedClickHouse{
-			{tcpPort: 1},
-			{tcpPort: 2},
+			{node: node{proc: nil, dir: "", ownsDir: false, tcpPort: 1, httpPort: 0}},
+			{node: node{proc: nil, dir: "", ownsDir: false, tcpPort: 2, httpPort: 0}},
 		},
 	}
 
@@ -115,6 +115,74 @@ func TestCluster_NodesBeforeStart(t *testing.T) {
 	t.Parallel()
 
 	cl := NewCluster(3)
+	assert.Nil(t, cl.Nodes())
+}
+
+// launchFakeCluster builds a started Cluster whose nodes run the given fake binary.
+func launchFakeCluster(t *testing.T, fake string, replicas int, cfg Config) *Cluster {
+	t.Helper()
+
+	nodes := make([]*EmbeddedClickHouse, replicas)
+
+	for i := range nodes {
+		nd, err := launchNode(nodeSpec{
+			binPath:     fake,
+			dataPath:    "",
+			tempPattern: "embedded-clickhouse-test-*",
+			tcpPort:     uint32(1000 + i),
+			httpPort:    uint32(2000 + i),
+			writeConfig: func(string) (string, error) { return "unused", nil },
+			output:      io.Discard,
+		})
+		require.NoError(t, err)
+
+		nodes[i] = &EmbeddedClickHouse{config: cfg, started: true, node: *nd, clusterManaged: true}
+	}
+
+	return &Cluster{config: cfg, replicas: replicas, started: true, nodes: nodes}
+}
+
+// TestCluster_StopIsConcurrent: with nodes that ignore SIGTERM, each stop runs into
+// StopTimeout. Stopping one after another would take replicas × StopTimeout.
+func TestCluster_StopIsConcurrent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		replicas    = 3
+		stopTimeout = time.Second
+	)
+
+	cl := launchFakeCluster(t, writeStubbornBinary(t), replicas, DefaultConfig().StopTimeout(stopTimeout))
+
+	start := time.Now()
+	err := cl.Stop()
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, ErrStopTimeout)
+	assert.Less(t, elapsed, 2*stopTimeout, "nodes must be stopped concurrently")
+}
+
+// TestCluster_StopInvalidatesNodeHandles stops a cluster of sleeping fake nodes and
+// checks that handles saved before Stop no longer report a (possibly reassigned) port.
+func TestCluster_StopInvalidatesNodeHandles(t *testing.T) {
+	t.Parallel()
+
+	cl := launchFakeCluster(t, writeSleepingBinary(t), 3, DefaultConfig().StopTimeout(5*time.Second))
+
+	saved := cl.Node(1)
+	require.NotEmpty(t, saved.DSN())
+
+	listed := cl.Nodes()
+	listed[0] = nil
+
+	assert.NotNil(t, cl.Node(0), "Nodes must return a copy")
+
+	require.NoError(t, cl.Stop())
+
+	assert.False(t, saved.Started())
+	assert.Empty(t, saved.DSN(), "a stale handle must not report the old port")
+	assert.Empty(t, saved.TCPAddr())
+	require.ErrorIs(t, saved.Start(), ErrClusterManaged)
 	assert.Nil(t, cl.Nodes())
 }
 
