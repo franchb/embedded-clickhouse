@@ -29,9 +29,9 @@ func TestNewCluster_DefaultConfig(t *testing.T) {
 func TestNewCluster_CustomConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultConfig().Version(V25_3).StartTimeout(180 * time.Second)
+	cfg := DefaultConfig().Version(V26_3).StartTimeout(180 * time.Second)
 	cl := NewCluster(3, cfg)
-	assert.Equal(t, V25_3, cl.config.version)
+	assert.Equal(t, V26_3, cl.config.version)
 	assert.Equal(t, 180*time.Second, cl.config.startTimeout)
 }
 

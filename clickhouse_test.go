@@ -28,9 +28,9 @@ func TestNewServer_DefaultConfig(t *testing.T) {
 func TestNewServer_CustomConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultConfig().Version(V25_3).TCPPort(19000)
+	cfg := DefaultConfig().Version(V26_3).TCPPort(19000)
 	s := NewServer(cfg)
-	assert.Equal(t, V25_3, s.config.version)
+	assert.Equal(t, V26_3, s.config.version)
 	assert.Equal(t, uint32(19000), s.config.tcpPort)
 }
 
@@ -376,7 +376,7 @@ func TestIntegration_StartStop(t *testing.T) {
 
 	s := NewServer(
 		DefaultConfig().
-			Version(V25_3).
+			Version(V26_3).
 			Logger(io.Discard),
 	)
 
@@ -404,7 +404,7 @@ func TestIntegration_SQLQueries(t *testing.T) {
 
 	s := NewServer(
 		DefaultConfig().
-			Version(V25_3).
+			Version(V26_3).
 			Logger(io.Discard),
 	)
 
@@ -468,8 +468,8 @@ func TestIntegration_ParallelInstances(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	s1 := NewServer(DefaultConfig().Version(V25_3).Logger(io.Discard))
-	s2 := NewServer(DefaultConfig().Version(V25_3).Logger(io.Discard))
+	s1 := NewServer(DefaultConfig().Version(V26_3).Logger(io.Discard))
+	s2 := NewServer(DefaultConfig().Version(V26_3).Logger(io.Discard))
 
 	require.NoError(t, s1.Start())
 	defer s1.Stop()
@@ -511,7 +511,7 @@ func TestIntegration_NewServerForTest(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	s := NewServerForTest(t, DefaultConfig().Version(V25_3).Logger(io.Discard))
+	s := NewServerForTest(t, DefaultConfig().Version(V26_3).Logger(io.Discard))
 
 	db, err := sql.Open("clickhouse", s.DSN())
 	require.NoError(t, err)
@@ -530,7 +530,7 @@ func TestIntegration_HTTPInterface(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	s := NewServer(DefaultConfig().Version(V25_3).Logger(io.Discard))
+	s := NewServer(DefaultConfig().Version(V26_3).Logger(io.Discard))
 
 	require.NoError(t, s.Start())
 	defer s.Stop()

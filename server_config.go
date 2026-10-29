@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -98,6 +99,25 @@ var serverManagedKeys = []string{
 	"users", "profiles", "quotas",
 }
 
+// serverDefaults are server settings written unless Settings overrides them.
+//
+// shutdown_wait_unfinished is how long a stopping server waits for open connections to
+// close. ClickHouse 26.8 raised its default from 5 to 120 seconds, past the default
+// StopTimeout. A cluster's last running node always holds one such connection (its own
+// DDL worker, reconnecting to its Keeper), so Stop ended by killing it.
+//
+//nolint:gochecknoglobals // immutable lookup table
+var serverDefaults = map[string]string{"shutdown_wait_unfinished": "5"}
+
+// withServerDefaults returns settings with serverDefaults filled in, leaving the
+// caller's map untouched.
+func withServerDefaults(settings map[string]string) map[string]string {
+	merged := maps.Clone(serverDefaults)
+	maps.Copy(merged, settings)
+
+	return merged
+}
+
 // validSettingKey matches safe XML element names for ClickHouse settings.
 var validSettingKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
@@ -150,7 +170,7 @@ func newBaseConfigData(dir, instanceID string, tcpPort, httpPort uint32, setting
 		TmpDir:          filepath.Join(dir, "tmp"),
 		UserFilesDir:    filepath.Join(dir, "user_files"),
 		FormatSchemaDir: filepath.Join(dir, "format_schemas"),
-		Settings:        settings,
+		Settings:        withServerDefaults(settings),
 	}
 }
 

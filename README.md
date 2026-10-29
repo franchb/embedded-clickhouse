@@ -66,7 +66,7 @@ func TestQuery(t *testing.T) {
 
 | Configuration      | Default                                              |
 |--------------------|------------------------------------------------------|
-| Version            | `V26_3` (26.3.2.3-lts)                              |
+| Version            | `DefaultVersion` = `V26_8` (see [Available versions](#available-versions)) |
 | TCP Port           | Auto-allocated                                       |
 | HTTP Port          | Auto-allocated                                       |
 | Cache Path         | `$XDG_CACHE_HOME/embedded-clickhouse/` or `~/.cache/embedded-clickhouse/` |
@@ -97,7 +97,7 @@ defer ch.Stop()
 ```go
 ch := embeddedclickhouse.NewServer(
     embeddedclickhouse.DefaultConfig().
-        Version(embeddedclickhouse.V25_3).
+        Version(embeddedclickhouse.V26_3).
         TCPPort(19000).
         HTTPPort(18123).
         DataPath("/tmp/ch-data").
@@ -119,7 +119,7 @@ var testServer *embeddedclickhouse.EmbeddedClickHouse
 func TestMain(m *testing.M) {
     testServer = embeddedclickhouse.NewServer(
         embeddedclickhouse.DefaultConfig().
-            Version(embeddedclickhouse.V25_8),
+            Version(embeddedclickhouse.V26_8),
     )
     if err := testServer.Start(); err != nil {
         log.Fatal(err)
@@ -299,7 +299,7 @@ All configuration methods use a builder pattern with value receivers, so the ori
 
 ```go
 base := embeddedclickhouse.DefaultConfig()
-custom := base.Version(embeddedclickhouse.V25_3) // base is unchanged
+custom := base.Version(embeddedclickhouse.V26_3) // base is unchanged
 ```
 
 | Method                     | Description                                              |
@@ -324,14 +324,21 @@ custom := base.Version(embeddedclickhouse.V25_3) // base is unchanged
 
 `Settings` keys must be valid XML element names and must not name an element embedded-clickhouse writes itself (`tcp_port`, `path`, `users`, `logger`, and in cluster mode `keeper_server`, `zookeeper`, `remote_servers`, `macros`, ...); such keys fail with `ErrInvalidSettingKey`.
 
+embedded-clickhouse also writes `shutdown_wait_unfinished` as 5 seconds, so that `Stop` finishes within the default `StopTimeout`: ClickHouse 26.8 raised its default to 120 seconds. Pass your own value through `Settings` to change it.
+
 ## Available versions
 
-| Constant | Version               | Channel |
-|----------|-----------------------|---------|
-| `V26_3`  | 26.3.2.3-lts          | LTS (default) |
-| `V26_1`  | 26.1.3.52-stable      | Stable  |
-| `V25_8`  | 25.8.16.34-lts        | LTS     |
-| `V25_3`  | 25.3.14.14-lts        | LTS     |
+<!-- versions:begin (generated from config.go by internal/cmd/chversions; do not edit) -->
+| Constant | Version | Channel |
+|----------|---------|---------|
+| `V26_8` | 26.8.34.13-lts | LTS (default) |
+| `V26_3` | 26.3.60.2-lts | LTS |
+| `V26_1` | 26.1.12.23-stable | Stable (deprecated) |
+| `V25_8` | 25.8.33.6-lts | LTS (deprecated) |
+| `V25_3` | 25.3.14.14-lts | LTS (deprecated) |
+<!-- versions:end -->
+
+Each constant tracks the latest patch release of its line, so upgrading embedded-clickhouse can move a constant to a newer patch. Deprecated constants name lines that ClickHouse no longer patches ([support table](https://github.com/ClickHouse/ClickHouse/blob/master/SECURITY.md)); they keep working but will be removed in a future major version.
 
 Any version string can be used — these constants are provided for convenience. Pass the full version from a [ClickHouse release tag](https://github.com/ClickHouse/ClickHouse/releases), e.g. `embeddedclickhouse.ClickHouseVersion("24.8.6.70-lts")`.
 
@@ -361,14 +368,14 @@ The package also compiles on other platforms (e.g. Windows), where `Start` retur
 
 ## CI caching
 
-The downloaded ClickHouse binary (~200MB for Linux, ~130MB for macOS) is cached at the cache path. In CI, cache this directory to avoid re-downloading on every run:
+The downloaded ClickHouse binary (~200MB for Linux, ~130MB for macOS) is cached at the cache path. In CI, cache this directory to avoid re-downloading on every run. Keying on `go.sum` starts a fresh cache whenever an embedded-clickhouse upgrade changes the pinned version:
 
 ```yaml
 # GitHub Actions
 - uses: actions/cache@v4
   with:
     path: ~/.cache/embedded-clickhouse
-    key: clickhouse-${{ runner.os }}-${{ runner.arch }}-25.8.16.34-lts
+    key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
 ```
 
 ## Memory limits
