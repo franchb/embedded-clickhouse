@@ -187,6 +187,7 @@ linters:
     testpackage:
       allow-packages:
         - embeddedclickhouse
+        - main # internal/cmd tools test their unexported helpers
     depguard:
       rules:
         main:
