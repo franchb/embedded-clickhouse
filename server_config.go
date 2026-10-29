@@ -102,8 +102,8 @@ var serverManagedKeys = []string{
 // serverDefaults are server settings written unless Settings overrides them.
 //
 // shutdown_wait_unfinished is how long a stopping server waits for open connections to
-// close. ClickHouse 26.8 raised its default from 5 to 120 seconds, past the default
-// StopTimeout. A cluster's last running node always holds one such connection (its own
+// close. ClickHouse 26.8 raised its default from 5 to 120 seconds (ClickHouse#110838),
+// past the default StopTimeout. A cluster's last running node always holds one such connection (its own
 // DDL worker, reconnecting to its Keeper), so Stop ended by killing it.
 //
 //nolint:gochecknoglobals // immutable lookup table

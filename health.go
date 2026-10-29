@@ -68,7 +68,28 @@ func exitError(nd *node) error {
 		return fmt.Errorf("%w: the server could not bind a listener: %w", ErrPortConflict, err)
 	}
 
+	if killedBySignal(nd.proc.waitErr, syscall.SIGILL) {
+		return fmt.Errorf("%w: the CPU most likely lacks an instruction the binary uses; x86-64 release builds "+
+			"of ClickHouse 26.6 and later need x86-64-v3 (AVX2), so on an older CPU use V26_3 "+
+			"or BinaryPath with a build for it", err)
+	}
+
 	return err
+}
+
+// killedBySignal reports whether waitErr says the process was terminated by sig.
+func killedBySignal(waitErr error, sig syscall.Signal) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return false
+	}
+
+	status, ok := exitErr.Sys().(interface {
+		Signaled() bool
+		Signal() syscall.Signal
+	})
+
+	return ok && status.Signaled() && status.Signal() == sig
 }
 
 // takenPort reports the first of ports that another process is listening on. It is

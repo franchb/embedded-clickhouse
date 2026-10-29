@@ -380,7 +380,7 @@ The downloaded ClickHouse binary (~200MB for Linux, ~130MB for macOS) is cached 
 
 ## Memory limits
 
-No server memory limit is imposed by default. ClickHouse uses its built-in ratio-based default (`max_server_memory_usage_to_ram_ratio = 0.9`), which caps the server at 90% of available RAM.
+No server memory limit is imposed by default. ClickHouse uses its built-in ratio-based default (`max_server_memory_usage_to_ram_ratio = 0.9`). Since ClickHouse 26.6 that cap is recomputed while the server runs, as 0.9 × (the server's resident memory + the memory the kernel reports available), so several test servers on one host leave room for each other ([ClickHouse#104964](https://github.com/ClickHouse/ClickHouse/pull/104964)); `memory_worker_dynamic_hard_limit = 0` restores the fixed startup cap.
 
 ClickHouse has two separate memory settings:
 
@@ -395,6 +395,15 @@ embeddedclickhouse.DefaultConfig().
 ```
 
 Environments with less than 2 GB total RAM will be fragile regardless of settings — ClickHouse needs memory for internal overhead (mark cache, logs, query cache, metadata) beyond query execution.
+
+## Upgrading to ClickHouse 26.8
+
+`DefaultVersion` is 26.8 since embedded-clickhouse v0.6.0. Changes since 26.3 that tests are likely to notice ([changelog](https://github.com/ClickHouse/ClickHouse/blob/master/CHANGELOG.md)):
+
+- **CPU requirement.** x86-64 release builds target x86-64-v3 (AVX2, BMI2, FMA) since 26.6 ([#105019](https://github.com/ClickHouse/ClickHouse/pull/105019)); there is no older-CPU build among the release assets. On such a CPU the server dies with SIGILL, and `Start` returns `ErrServerExited` saying so. Use `V26_3`, or `BinaryPath` with a build for that CPU. Check a Linux host with `grep -o -w avx2 /proc/cpuinfo | head -1`; QEMU/KVM guests need a CPU model that exposes it (e.g. `-cpu host`).
+- **`max_insert_threads` defaults to the number of cores** (26.8, [#109000](https://github.com/ClickHouse/ClickHouse/pull/109000)). `INSERT ... SELECT` can create more parts, and rows land in a different order; queries that relied on insertion order without `ORDER BY` can change results. `Settings` cannot change it (it is a query setting): pass `max_insert_threads=1` in the DSN or per query, or set `compatibility`.
+- **`date_time_input_format` defaults to `best_effort`** (26.5, [#89334](https://github.com/ClickHouse/ClickHouse/pull/89334)): strings such as `Apr 15, 2020 10:30:00` now parse as `DateTime` instead of failing, so a test expecting a parse error fails.
+- **Shutdown wait.** 26.8 waits up to 120 seconds for open connections when stopping ([#110838](https://github.com/ClickHouse/ClickHouse/pull/110838)); embedded-clickhouse sets 5 seconds (see `Settings` above).
 
 ## How it works
 
