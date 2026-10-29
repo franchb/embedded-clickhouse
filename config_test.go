@@ -57,7 +57,7 @@ func TestConfigBuilderChaining(t *testing.T) {
 	settings := map[string]string{"max_threads": "2"}
 
 	cfg := DefaultConfig().
-		Version(V25_3).
+		Version(V26_3).
 		TCPPort(19000).
 		HTTPPort(18123).
 		CachePath("/tmp/cache").
@@ -69,8 +69,8 @@ func TestConfigBuilderChaining(t *testing.T) {
 		Logger(buf).
 		Settings(settings)
 
-	if cfg.version != V25_3 {
-		t.Errorf("version = %q, want %q", cfg.version, V25_3)
+	if cfg.version != V26_3 {
+		t.Errorf("version = %q, want %q", cfg.version, V26_3)
 	}
 
 	if cfg.tcpPort != 19000 {
@@ -163,7 +163,7 @@ func TestConfigBuilderImmutability(t *testing.T) {
 	t.Parallel()
 
 	base := DefaultConfig()
-	modified := base.Version(V25_3).TCPPort(9000)
+	modified := base.Version(V26_3).TCPPort(9000)
 
 	if base.version != DefaultVersion {
 		t.Errorf("base version was modified: %q", base.version)
@@ -173,8 +173,8 @@ func TestConfigBuilderImmutability(t *testing.T) {
 		t.Errorf("base tcpPort was modified: %d", base.tcpPort)
 	}
 
-	if modified.version != V25_3 {
-		t.Errorf("modified version = %q, want %q", modified.version, V25_3)
+	if modified.version != V26_3 {
+		t.Errorf("modified version = %q, want %q", modified.version, V26_3)
 	}
 
 	if modified.tcpPort != 9000 {

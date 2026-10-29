@@ -22,20 +22,33 @@ const (
 // ClickHouseVersion represents a ClickHouse server version string.
 type ClickHouseVersion string
 
+// Version constants, newest first. Each pins the latest patch release of its line;
+// the clickhouse-versions workflow moves them to newer patches. To pin an exact build,
+// pass a literal such as ClickHouseVersion("26.8.34.13-lts").
+
+// V26_8 is ClickHouse 26.8 (LTS channel).
+const V26_8 ClickHouseVersion = "26.8.34.13-lts"
+
 // V26_3 is ClickHouse 26.3 (LTS channel).
-const V26_3 ClickHouseVersion = "26.3.2.3-lts"
+const V26_3 ClickHouseVersion = "26.3.60.2-lts"
 
 // V26_1 is ClickHouse 26.1 (stable channel).
-const V26_1 ClickHouseVersion = "26.1.3.52-stable"
+//
+// Deprecated: ClickHouse no longer ships security fixes for 26.1. Use V26_8.
+const V26_1 ClickHouseVersion = "26.1.12.23-stable"
 
 // V25_8 is ClickHouse 25.8 (LTS channel).
-const V25_8 ClickHouseVersion = "25.8.16.34-lts"
+//
+// Deprecated: ClickHouse no longer ships security fixes for 25.8. Use V26_8.
+const V25_8 ClickHouseVersion = "25.8.33.6-lts"
 
 // V25_3 is ClickHouse 25.3 (LTS channel).
+//
+// Deprecated: ClickHouse no longer ships security fixes for 25.3. Use V26_8.
 const V25_3 ClickHouseVersion = "25.3.14.14-lts"
 
 // DefaultVersion is the default ClickHouse version used when none is specified.
-const DefaultVersion = V26_3
+const DefaultVersion = V26_8
 
 // Config holds configuration for an embedded ClickHouse server.
 type Config struct {

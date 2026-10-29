@@ -266,17 +266,17 @@ func TestDownloadHeader_Immutable(t *testing.T) {
 func TestCachedBinaryPath_KeyedByRepositoryURL(t *testing.T) {
 	t.Parallel()
 
-	def := cachedBinaryPath("/c", V25_8, "")
+	def := cachedBinaryPath("/c", testVersion, "")
 
-	assert.Equal(t, def, cachedBinaryPath("/c", V25_8, defaultBaseURL), "explicit default URL keeps the default entry")
-	assert.Equal(t, def, cachedBinaryPath("/c", V25_8, defaultBaseURL+"/"))
+	assert.Equal(t, def, cachedBinaryPath("/c", testVersion, defaultBaseURL), "explicit default URL keeps the default entry")
+	assert.Equal(t, def, cachedBinaryPath("/c", testVersion, defaultBaseURL+"/"))
 
-	mirrorA := cachedBinaryPath("/c", V25_8, "https://mirror-a.example.com/releases")
-	mirrorB := cachedBinaryPath("/c", V25_8, "https://mirror-b.example.com/releases")
+	mirrorA := cachedBinaryPath("/c", testVersion, "https://mirror-a.example.com/releases")
+	mirrorB := cachedBinaryPath("/c", testVersion, "https://mirror-b.example.com/releases")
 
 	assert.NotEqual(t, def, mirrorA)
 	assert.NotEqual(t, mirrorA, mirrorB)
-	assert.Equal(t, mirrorA, cachedBinaryPath("/c", V25_8, "https://mirror-a.example.com/releases/"))
+	assert.Equal(t, mirrorA, cachedBinaryPath("/c", testVersion, "https://mirror-a.example.com/releases/"))
 }
 
 func TestCacheDir_RelativeOverrideIsAbsolute(t *testing.T) {

@@ -177,3 +177,60 @@ func TestWriteServerConfig_UserListenHost(t *testing.T) {
 		t.Errorf("config missing the user listen_host:\n%s", xml)
 	}
 }
+
+// TestWriteServerConfig_ShutdownWait: the config bounds the shutdown wait (ClickHouse
+// 26.8 defaults it to 120 seconds), and a user setting replaces the default.
+func TestWriteServerConfig_ShutdownWait(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		settings map[string]string
+		want     string
+	}{
+		{"default", nil, "<shutdown_wait_unfinished>5</shutdown_wait_unfinished>"},
+		{"user value", map[string]string{"shutdown_wait_unfinished": "1"}, "<shutdown_wait_unfinished>1</shutdown_wait_unfinished>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			configPath, err := writeServerConfig(t.TempDir(), testInstanceID, 19000, 18123, tt.settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			content, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			xml := string(content)
+
+			if got := strings.Count(xml, "<shutdown_wait_unfinished>"); got != 1 {
+				t.Fatalf("config has %d <shutdown_wait_unfinished> elements, want 1:\n%s", got, xml)
+			}
+
+			if !strings.Contains(xml, tt.want) {
+				t.Errorf("config missing %s:\n%s", tt.want, xml)
+			}
+		})
+	}
+}
+
+func TestWithServerDefaults_KeepsCallerMap(t *testing.T) {
+	t.Parallel()
+
+	settings := map[string]string{"max_threads": "2"}
+
+	merged := withServerDefaults(settings)
+
+	if len(settings) != 1 {
+		t.Errorf("caller's map was modified: %v", settings)
+	}
+
+	if merged["max_threads"] != "2" || merged["shutdown_wait_unfinished"] != "5" {
+		t.Errorf("merged = %v", merged)
+	}
+}

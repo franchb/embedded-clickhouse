@@ -44,7 +44,7 @@ func ExampleNewServerForTest() {
 // ExampleConfig_Settings demonstrates builder chaining and Settings usage.
 func ExampleConfig_Settings() {
 	cfg := embeddedclickhouse.DefaultConfig().
-		Version(embeddedclickhouse.V25_3).
+		Version(embeddedclickhouse.V26_3).
 		TCPPort(19000).
 		HTTPPort(18123).
 		StartTimeout(60 * time.Second).

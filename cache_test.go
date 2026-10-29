@@ -56,7 +56,7 @@ func TestCacheDir_Default(t *testing.T) {
 func TestCachedBinaryPath(t *testing.T) {
 	t.Parallel()
 
-	path := cachedBinaryPath("/cache", V25_8, "")
+	path := cachedBinaryPath("/cache", testVersion, "")
 	if !strings.HasPrefix(path, "/cache/clickhouse-25.8.16.34-lts-") {
 		t.Errorf("unexpected path: %q", path)
 	}

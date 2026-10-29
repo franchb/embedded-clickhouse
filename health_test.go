@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -310,6 +311,27 @@ func TestWaitForReadyOrExit_ExitWithNetworkError(t *testing.T) {
 	err := waitForReadyOrExit(ctx, probeNode(proc, httpPort))
 	if !errors.Is(err, ErrPortConflict) || !errors.Is(err, ErrServerExited) {
 		t.Fatalf("waitForReadyOrExit = %v, want ErrPortConflict wrapping ErrServerExited", err)
+	}
+}
+
+// TestExitError_IllegalInstruction: a server killed by SIGILL, as 26.6+ x86-64 builds
+// are on a CPU without AVX2, gets an error that names the likely cause.
+func TestExitError_IllegalInstruction(t *testing.T) {
+	t.Parallel()
+
+	waitErr := exec.Command(writeScriptBinary(t, "#!/bin/sh\nkill -ILL $$\n")).Run()
+
+	done := make(chan struct{})
+	close(done)
+
+	err := exitError(probeNode(&process{cmd: nil, done: done, waitErr: waitErr}, 0))
+	if !errors.Is(err, ErrServerExited) || !strings.Contains(err.Error(), "x86-64-v3") {
+		t.Fatalf("exitError = %v, want ErrServerExited naming x86-64-v3", err)
+	}
+
+	plain := exitError(probeNode(&process{cmd: nil, done: done, waitErr: exec.Command(writeFakeBinary(t, 1)).Run()}, 0))
+	if strings.Contains(plain.Error(), "x86-64-v3") {
+		t.Errorf("exit status 1 should not mention the CPU: %v", plain)
 	}
 }
 

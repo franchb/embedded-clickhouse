@@ -1,0 +1,149 @@
+name: ClickHouse versions
+
+# Weekly: moves the ClickHouse version constants in config.go to the latest published
+# patch of their line, adds a constant for each new LTS line, and opens (or refreshes) a
+# pull request. It never merges, never removes a constant and never changes
+# DefaultVersion; those stay reviewed decisions.
+#
+# The pull request is made with a GitHub App token, not GITHUB_TOKEN: GitHub does not
+# start workflows for events caused by GITHUB_TOKEN, so CI would never run on it. The
+# commit is created through the GraphQL API, which GitHub signs for the App, as the
+# main ruleset requires signed commits.
+#
+# Setup: a GitHub App installed on this repository only, with repository permissions
+# Contents: read and write, Pull requests: read and write. Store its client ID as the
+# variable CH_VERSIONS_APP_CLIENT_ID and a private key as the secret
+# CH_VERSIONS_APP_PRIVATE_KEY.
+
+on:
+  schedule:
+    - cron: "23 4 * * 2"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: clickhouse-versions
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update version constants
+    if: github.repository == 'franchb/embedded-clickhouse'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # find the open update pull request
+    env:
+      BRANCH: automation/clickhouse-versions
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+
+      - name: Pick the base
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # With an update pull request open, build on its branch so that edits a reviewer
+          # pushed there (a new default, a deprecation) are kept; otherwise start from main.
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$pr" ]]; then
+            git fetch --quiet origin "$BRANCH"
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Update constants
+        run: |
+          git ls-remote --tags https://github.com/ClickHouse/ClickHouse.git > "$RUNNER_TEMP/tags.txt"
+          go run ./internal/cmd/chversions -tags "$RUNNER_TEMP/tags.txt" -summary "$RUNNER_TEMP/summary.md"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "Version constants are current."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --stat
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build and unit test
+        if: steps.diff.outputs.changed == 'true'
+        run: go test -short -count=1 ./...
+
+      - name: Create App token
+        id: app-token
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.CH_VERSIONS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CH_VERSIONS_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Commit and open pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR: ${{ steps.base.outputs.pr }}
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
+          # Without an open pull request, a leftover branch is stale: point it at main.
+          if [[ -z "$PR" ]]; then
+            if gh api "repos/$GH_REPO/git/ref/heads/$BRANCH" > /dev/null 2>&1; then
+              gh api -X PATCH "repos/$GH_REPO/git/refs/heads/$BRANCH" -f sha="$BASE" -F force=true > /dev/null
+            else
+              gh api "repos/$GH_REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE" > /dev/null
+            fi
+          fi
+
+          additions='[]'
+          while IFS= read -r path; do
+            additions=$(jq --arg path "$path" --rawfile contents <(base64 -w0 "$path") \
+              '. + [{path: $path, contents: $contents}]' <<< "$additions")
+          done < <(git diff --name-only)
+
+          # expectedHeadOid makes the commit fail if the branch moved since it was read.
+          jq -n --arg repo "$GH_REPO" --arg branch "$BRANCH" --arg base "$BASE" \
+            --rawfile body "$RUNNER_TEMP/summary.md" --argjson additions "$additions" '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: {input: {
+                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $base,
+                message: {headline: "deps: update ClickHouse version constants", body: $body},
+                fileChanges: {additions: $additions}
+              }}
+            }' > "$RUNNER_TEMP/commit.json"
+          gh api graphql --input "$RUNNER_TEMP/commit.json" --jq .data.createCommitOnBranch.commit.oid
+
+          {
+            echo "Automated update from the \`clickhouse-versions\` workflow."
+            echo
+            cat "$RUNNER_TEMP/summary.md"
+            echo
+            echo "\`DefaultVersion\` is unchanged. To make a new LTS line the default, or to"
+            echo "deprecate a line ClickHouse no longer supports, edit \`config.go\` on this branch."
+          } > "$RUNNER_TEMP/body.md"
+
+          if [[ -n "$PR" ]]; then
+            gh pr comment "$PR" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "deps: update ClickHouse version constants" --body-file "$RUNNER_TEMP/body.md"
+          fi

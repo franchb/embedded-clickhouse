@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// testVersion is a fixed version for tests of URL and path construction, so that their
+// expectations do not change when the exported version constants move to new patches.
+const testVersion ClickHouseVersion = "25.8.16.34-lts"
+
 func TestResolveAsset_Linux(t *testing.T) {
 	t.Parallel()
 
@@ -19,7 +23,7 @@ func TestResolveAsset_Linux(t *testing.T) {
 		t.Run("linux/"+tt.arch, func(t *testing.T) {
 			t.Parallel()
 
-			asset, err := resolveAsset(V25_8, "linux", tt.arch)
+			asset, err := resolveAsset(testVersion, "linux", tt.arch)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +53,7 @@ func TestResolveAsset_Darwin(t *testing.T) {
 		t.Run("darwin/"+tt.arch, func(t *testing.T) {
 			t.Parallel()
 
-			asset, err := resolveAsset(V25_8, "darwin", tt.arch)
+			asset, err := resolveAsset(testVersion, "darwin", tt.arch)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +86,7 @@ func TestResolveAsset_Unsupported(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := resolveAsset(V25_8, tt.goos, tt.arch)
+			_, err := resolveAsset(testVersion, tt.goos, tt.arch)
 			if !errors.Is(err, ErrUnsupportedPlatform) {
 				t.Errorf("err = %v, want ErrUnsupportedPlatform", err)
 			}
@@ -97,10 +101,8 @@ func TestNumericVersion(t *testing.T) {
 		in   ClickHouseVersion
 		want string
 	}{
-		{V26_3, "26.3.2.3"},
-		{V25_8, "25.8.16.34"},
-		{V25_3, "25.3.14.14"},
-		{V26_1, "26.1.3.52"},
+		{"25.8.16.34-lts", "25.8.16.34"},
+		{"26.1.3.52-stable", "26.1.3.52"},
 		{"24.1.1.1", "24.1.1.1"},
 	}
 	for _, tt := range tests {
@@ -120,7 +122,7 @@ func TestDownloadURL(t *testing.T) {
 
 	asset := platformAsset{filename: "clickhouse-common-static-25.8.16.34-amd64.tgz", assetType: assetArchive}
 
-	got := downloadURL("", V25_8, asset)
+	got := downloadURL("", testVersion, asset)
 
 	want := "https://github.com/ClickHouse/ClickHouse/releases/download/v25.8.16.34-lts/clickhouse-common-static-25.8.16.34-amd64.tgz"
 	if got != want {
@@ -133,9 +135,9 @@ func TestDownloadURL_CustomBase(t *testing.T) {
 
 	asset := platformAsset{filename: assetMacOSAARCH64, assetType: assetRawBinary}
 
-	got := downloadURL("https://mirror.example.com/releases", V25_3, asset)
+	got := downloadURL("https://mirror.example.com/releases", testVersion, asset)
 
-	want := "https://mirror.example.com/releases/v25.3.14.14-lts/clickhouse-macos-aarch64"
+	want := "https://mirror.example.com/releases/v25.8.16.34-lts/clickhouse-macos-aarch64"
 	if got != want {
 		t.Errorf("downloadURL = %q, want %q", got, want)
 	}
@@ -146,7 +148,7 @@ func TestSHA512URL(t *testing.T) {
 
 	asset := platformAsset{filename: "clickhouse-common-static-25.8.16.34-amd64.tgz", assetType: assetArchive}
 
-	got := sha512URL("", V25_8, asset)
+	got := sha512URL("", testVersion, asset)
 
 	want := "https://github.com/ClickHouse/ClickHouse/releases/download/v25.8.16.34-lts/clickhouse-common-static-25.8.16.34-amd64.tgz.sha512"
 	if got != want {
@@ -159,7 +161,7 @@ func TestSHA512URL_Darwin(t *testing.T) {
 
 	asset := platformAsset{filename: assetMacOSAARCH64, assetType: assetRawBinary}
 
-	got := sha512URL("", V25_8, asset)
+	got := sha512URL("", testVersion, asset)
 
 	want := "https://github.com/ClickHouse/ClickHouse/releases/download/v25.8.16.34-lts/clickhouse-macos-aarch64.sha512"
 	if got != want {
