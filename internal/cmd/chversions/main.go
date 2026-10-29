@@ -385,14 +385,17 @@ func summary(changes, skipped []string) string {
 	return buf.String()
 }
 
-func run(ctx context.Context) error {
-	configPath := flag.String("config", "config.go", "Go file declaring the version constants")
-	readmePath := flag.String("readme", "README.md", "README with the generated version table")
-	tagsPath := flag.String("tags", "", "file with `git ls-remote --tags` output of ClickHouse")
-	summaryPath := flag.String("summary", "", "write a Markdown list of the changes to this file")
-	baseURL := flag.String("base-url", defaultBaseURL, "release download location to check assets on")
+func run(ctx context.Context, args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("chversions", flag.ContinueOnError)
+	configPath := flags.String("config", "config.go", "Go file declaring the version constants")
+	readmePath := flags.String("readme", "README.md", "README with the generated version table")
+	tagsPath := flags.String("tags", "", "file with `git ls-remote --tags` output of ClickHouse")
+	summaryPath := flags.String("summary", "", "write a Markdown list of the changes to this file")
+	baseURL := flags.String("base-url", defaultBaseURL, "release download location to check assets on")
 
-	flag.Parse()
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	tags, err := os.Open(*tagsPath)
 	if err != nil {
@@ -446,7 +449,7 @@ func run(ctx context.Context) error {
 	}
 
 	report := summary(upd.changes, upd.skipped)
-	fmt.Fprint(os.Stdout, report)
+	fmt.Fprint(stdout, report)
 
 	if *summaryPath != "" {
 		if err := os.WriteFile(*summaryPath, []byte(report), filePerm); err != nil {
@@ -458,7 +461,7 @@ func run(ctx context.Context) error {
 }
 
 func main() {
-	if err := run(context.Background()); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "chversions:", err)
 		os.Exit(1)
 	}
